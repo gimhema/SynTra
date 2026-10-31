@@ -13,7 +13,7 @@ cargo run --release
 
 ## 제안서 포맷
 
-에이전트는 제안서를 워크스페이스의 `.syntra/proposals/<id>.json`에 작성합니다. `<id>`에는 영문, 숫자, `-`, `_`만 사용할 수 있습니다. 예제는 [examples/proposals](examples/proposals)에 있습니다.
+에이전트는 제안서를 워크스페이스의 `.syntra/proposals/<id>.json`에 작성합니다. 이 폴더가 없으면 `proposals/<id>.json`을 읽고, 제안서 폴더 자체를 열면 그 상위 폴더를 워크스페이스로 엽니다. `<id>`에는 영문, 숫자, `-`, `_`만 사용할 수 있습니다. 예제는 [examples/proposals](examples/proposals)에 있습니다.
 
 ```json
 { "kind": "create", "file_name": "a.rs", "content": "...", "purpose": "...", "location": "src/" }
@@ -30,7 +30,7 @@ cargo run --release
 검토 결과는 같은 파일의 `review`에 기록됩니다.
 
 ```json
-"review": { "status": "approved", "commit": "<편집안의 커밋 해시>" }
+"review": { "status": "approved" }
 ```
 
 ```json
@@ -41,16 +41,16 @@ cargo run --release
 
 | | 생성안 | 편집안 |
 |---|---|---|
-| 승인 | `location/file_name`에 파일 생성 (커밋 안 함) | 영역을 교체하고 해당 파일만 즉시 커밋 |
-| 승인이 거부되는 경우 | 같은 파일이 이미 존재 | `before`가 정확히 한 곳에서 발견되지 않음, 파일에 커밋되지 않은 변경이 있음, git 저장소가 아님, 커밋 실패 |
+| 승인 | `location/file_name`에 파일 생성 | 파일에서 해당 영역을 교체 |
+| 승인이 거부되는 경우 | 같은 파일이 이미 존재 | `before`가 정확히 한 곳에서 발견되지 않음 |
 | 거부 | 사유 필수, 코드 변경 없음 | 사유 필수, 코드 변경 없음 |
 
-워크스페이스 밖, `.git`, `.syntra`를 가리키는 경로는 승인할 수 없습니다.
+승인은 파일 내용만 바꾸며 git 커밋이나 스테이징은 하지 않습니다. 워크스페이스 밖, `.git`, `.syntra`, 제안서 폴더를 가리키는 경로는 승인할 수 없습니다.
 
 ## 체험
 
 ```sh
-cargo run --example demo   # 체험용 저장소를 만들고 경로를 출력
+cargo run --example demo   # 체험용 워크스페이스를 만들고 경로를 출력
 cargo run --release
 ```
 

@@ -3,6 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use syntra_core::{Review, Store};
 
 const MAX_RECENT: usize = 8;
 
@@ -13,7 +14,8 @@ pub struct Folder {
     pub parent: Option<String>,
     pub dirs: Vec<String>,
     pub drives: Vec<String>,
-    pub is_git: bool,
+    /// 이 폴더를 워크스페이스로 열었을 때 승인 대기 중인 제안서 수.
+    pub pending: usize,
 }
 
 pub fn home_dir() -> Option<PathBuf> {
@@ -32,10 +34,23 @@ pub fn browse(path: &Path) -> io::Result<Folder> {
     Ok(Folder {
         parent: path.parent().map(|p| p.display().to_string()),
         drives: drives(),
-        is_git: path.join(".git").exists(),
+        pending: count_pending(&path),
         path: path.display().to_string(),
         dirs,
     })
+}
+
+fn count_pending(path: &Path) -> usize {
+    Store::new(Store::workspace_root(path))
+        .list()
+        .map(|listing| {
+            listing
+                .proposals
+                .iter()
+                .filter(|entry| entry.proposal.review == Review::Pending)
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 fn drives() -> Vec<String> {

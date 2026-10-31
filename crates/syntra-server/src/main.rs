@@ -130,7 +130,7 @@ async fn open_workspace(
     if !path.is_dir() {
         return Err(not_a_folder(&request.path));
     }
-    let path = path.display().to_string();
+    let path = Store::workspace_root(&path).display().to_string();
     state.recent.add(&path);
     set_current(&state, Some(path));
     Ok(Json(workspace_info(&state)))
@@ -170,12 +170,7 @@ async fn approve_proposal(
     State(state): State<SharedState>,
     Path(id): Path<String>,
 ) -> Result<Json<Proposal>, ApiError> {
-    let store = current_store(&state)?;
-    // git 훅이 오래 걸릴 수 있어 비동기 작업자를 막지 않게 한다.
-    let proposal = tokio::task::spawn_blocking(move || store.approve(&id))
-        .await
-        .map_err(ApiError::internal)??;
-    Ok(Json(proposal))
+    Ok(Json(current_store(&state)?.approve(&id)?))
 }
 
 async fn reject_proposal(
@@ -383,6 +378,29 @@ mod tests {
         open(&app, &dir).await;
         let recent = Recent::new(Some(dir.path().join("recent.json"))).list();
         assert_eq!(recent, [dir.path().join("work").display().to_string()]);
+    }
+
+    #[tokio::test]
+    async fn opening_a_proposals_folder_opens_its_workspace() {
+        let (dir, app) = test_app();
+        let plain = dir.path().join("plain/proposals");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(
+            plain.join("one.json"),
+            r#"{"kind":"create","file_name":"a.rs","content":"x","purpose":"p","location":""}"#,
+        )
+        .unwrap();
+
+        let body = serde_json::json!({ "path": plain }).to_string();
+        assert_eq!(
+            post_json(&app, "/api/workspace", &body).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(&app, "/api/proposals/one/approve", "").await,
+            StatusCode::OK
+        );
+        assert!(dir.path().join("plain/a.rs").exists());
     }
 
     #[tokio::test]

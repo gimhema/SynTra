@@ -9,12 +9,12 @@ use crate::apply::apply;
 use crate::model::{Proposal, Review};
 
 const PROPOSALS_DIR: &str = ".syntra/proposals";
+const FALLBACK_PROPOSALS_DIR: &str = "proposals";
 
 /// 워크스페이스의 제안서 디렉터리. 제안서 하나가 `<id>.json` 파일 하나에 대응한다.
 #[derive(Debug)]
 pub struct Store {
     root: PathBuf,
-    dir: PathBuf,
     write_lock: Mutex<()>,
 }
 
@@ -34,6 +34,8 @@ pub struct InvalidEntry {
 
 #[derive(Debug, Default, Serialize)]
 pub struct Listing {
+    /// 제안서를 찾은 디렉터리. 목록이 비었을 때 사용자에게 알려주기 위해 담는다.
+    pub source: String,
     pub proposals: Vec<Entry>,
     pub invalid: Vec<InvalidEntry>,
 }
@@ -58,17 +60,50 @@ pub enum ReviewError {
 
 impl Store {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        let root = root.into();
         Self {
-            dir: root.join(PROPOSALS_DIR),
-            root,
+            root: root.into(),
             write_lock: Mutex::new(()),
         }
     }
 
+    /// 제안서 폴더 자체를 고른 경우에도 워크스페이스 최상위를 돌려준다.
+    pub fn workspace_root(path: &Path) -> PathBuf {
+        let path: PathBuf = path.components().collect();
+        if path
+            .file_name()
+            .is_none_or(|name| name != FALLBACK_PROPOSALS_DIR)
+        {
+            return path;
+        }
+        let Some(parent) = path.parent() else {
+            return path;
+        };
+        if parent.file_name().is_some_and(|name| name == ".syntra") {
+            return parent.parent().unwrap_or(parent).to_path_buf();
+        }
+        if has_json_file(&path) {
+            return parent.to_path_buf();
+        }
+        path
+    }
+
+    fn dir(&self) -> PathBuf {
+        let primary = self.root.join(PROPOSALS_DIR);
+        let fallback = self.root.join(FALLBACK_PROPOSALS_DIR);
+        if !primary.is_dir() && fallback.is_dir() {
+            fallback
+        } else {
+            primary
+        }
+    }
+
     pub fn list(&self) -> io::Result<Listing> {
-        let mut listing = Listing::default();
-        let entries = match fs::read_dir(&self.dir) {
+        let dir = self.dir();
+        let mut listing = Listing {
+            source: dir.display().to_string(),
+            ..Listing::default()
+        };
+        let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(listing),
             Err(e) => return Err(e),
@@ -100,8 +135,8 @@ impl Store {
     pub fn approve(&self, id: &str) -> Result<Proposal, ReviewError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut proposal = self.load_pending(id)?;
-        let commit = apply(&self.root, &proposal.change)?;
-        proposal.review = Review::Approved { commit };
+        apply(&self.root, &self.dir(), &proposal.change)?;
+        proposal.review = Review::Approved;
         self.save(id, &proposal)?;
         Ok(proposal)
     }
@@ -127,7 +162,7 @@ impl Store {
         if !is_valid_id(id) {
             return Err(ReviewError::NotFound(id.to_string()));
         }
-        let path = self.dir.join(format!("{id}.json"));
+        let path = self.dir().join(format!("{id}.json"));
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -144,11 +179,20 @@ impl Store {
 
     fn save(&self, id: &str, proposal: &Proposal) -> Result<(), ReviewError> {
         // 쓰기 도중 실패해도 원본이 깨지지 않도록 임시 파일을 거쳐 교체한다.
-        let tmp = self.dir.join(format!("{id}.json.tmp"));
+        let dir = self.dir();
+        let tmp = dir.join(format!("{id}.json.tmp"));
         fs::write(&tmp, serde_json::to_vec_pretty(proposal)?)?;
-        fs::rename(&tmp, self.dir.join(format!("{id}.json")))?;
+        fs::rename(&tmp, dir.join(format!("{id}.json")))?;
         Ok(())
     }
+}
+
+fn has_json_file(dir: &Path) -> bool {
+    fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+    })
 }
 
 fn is_valid_id(id: &str) -> bool {
@@ -205,19 +249,13 @@ mod tests {
         String::from_utf8(output.stdout).unwrap()
     }
 
-    /// `src/main.rs`가 커밋된 저장소를 만든다.
+    /// `src/main.rs`가 있는 워크스페이스를 만든다.
     fn repo() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        git(root, &["init", "-q"]);
-        git(root, &["config", "user.name", "test"]);
-        git(root, &["config", "user.email", "test@example.com"]);
-        git(root, &["config", "core.autocrlf", "false"]);
         fs::create_dir(root.join("src")).unwrap();
         fs::write(root.join("src/main.rs"), "one\ntwo\ntwo\n").unwrap();
         fs::write(root.join("other.txt"), "x\n").unwrap();
-        git(root, &["add", "."]);
-        git(root, &["commit", "-qm", "init"]);
         let store = Store::new(root);
         (dir, store)
     }
@@ -328,18 +366,14 @@ mod tests {
     }
 
     #[test]
-    fn approve_create_places_file_without_commit() {
+    fn approve_create_places_file() {
         let (dir, store) = repo();
         write_proposal(dir.path(), "c", &create_json("src/new/", "a.rs"));
         let proposal = store.approve("c").unwrap();
-        assert_eq!(proposal.review, Review::Approved { commit: None });
+        assert_eq!(proposal.review, Review::Approved);
         assert_eq!(
             fs::read_to_string(dir.path().join("src/new/a.rs")).unwrap(),
             "new\n"
-        );
-        assert_eq!(
-            git(dir.path(), &["rev-list", "--count", "HEAD"]).trim(),
-            "1"
         );
     }
 
@@ -402,32 +436,43 @@ mod tests {
     }
 
     #[test]
-    fn approve_edit_commits_only_that_file() {
+    fn approve_edit_replaces_only_the_region() {
         let (dir, store) = repo();
         let root = dir.path();
-        fs::write(root.join("other.txt"), "dirty\n").unwrap();
-        fs::write(root.join("staged.txt"), "staged\n").unwrap();
-        git(root, &["add", "staged.txt"]);
         write_proposal(root, "e", &edit_json("one\n", "ONE\n"));
 
         let proposal = store.approve("e").unwrap();
 
-        let head = git(root, &["rev-parse", "HEAD"]).trim().to_string();
-        assert_eq!(proposal.review, Review::Approved { commit: Some(head) });
-        assert_eq!(
-            git(root, &["show", "--name-only", "--format=", "HEAD"]).trim(),
-            "src/main.rs"
-        );
+        assert_eq!(proposal.review, Review::Approved);
         assert_eq!(
             fs::read_to_string(root.join("src/main.rs")).unwrap(),
             "ONE\ntwo\ntwo\n"
         );
-        assert!(git(root, &["log", "-1", "--format=%B"]).contains("- 목적"));
+        assert_eq!(fs::read_to_string(root.join("other.txt")).unwrap(), "x\n");
+    }
+
+    #[test]
+    fn approve_keeps_uncommitted_changes_and_git_history() {
+        let (dir, store) = repo();
+        let root = dir.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.name", "test"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["add", "src/main.rs"]);
+        git(root, &["commit", "-qm", "init"]);
+        fs::write(root.join("src/main.rs"), "one\ntwo\ntwo\nlocal\n").unwrap();
+        write_proposal(root, "e", &edit_json("one\n", "ONE\n"));
+        write_proposal(root, "c", &create_json("src/", "new.rs"));
+
+        store.approve("e").unwrap();
+        store.approve("c").unwrap();
+
+        assert_eq!(git(root, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        assert_eq!(git(root, &["diff", "--cached", "--name-only"]).trim(), "");
         assert_eq!(
-            fs::read_to_string(root.join("other.txt")).unwrap(),
-            "dirty\n"
+            fs::read_to_string(root.join("src/main.rs")).unwrap(),
+            "ONE\ntwo\ntwo\nlocal\n"
         );
-        assert!(git(root, &["status", "--porcelain"]).contains("A  staged.txt"));
     }
 
     #[test]
@@ -440,10 +485,6 @@ mod tests {
                 "{before}"
             );
             assert_eq!(
-                git(dir.path(), &["rev-list", "--count", "HEAD"]).trim(),
-                "1"
-            );
-            assert_eq!(
                 fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
                 "one\ntwo\ntwo\n"
             );
@@ -451,52 +492,82 @@ mod tests {
     }
 
     #[test]
-    fn approve_edit_refuses_dirty_file() {
-        let (dir, store) = repo();
-        fs::write(dir.path().join("src/main.rs"), "one\nlocal\n").unwrap();
-        write_proposal(dir.path(), "e", &edit_json("one\n", "ONE\n"));
-        assert!(matches!(store.approve("e"), Err(ReviewError::Apply(_))));
-        assert_eq!(
-            fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
-            "one\nlocal\n"
-        );
-    }
-
-    #[test]
-    fn failed_commit_restores_the_file() {
-        let (dir, store) = repo();
-        let hook = dir.path().join(".git/hooks/pre-commit");
-        fs::create_dir_all(hook.parent().unwrap()).unwrap();
-        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        write_proposal(dir.path(), "e", &edit_json("one\n", "ONE\n"));
-        assert!(matches!(store.approve("e"), Err(ReviewError::Apply(_))));
-        assert_eq!(
-            fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
-            "one\ntwo\ntwo\n"
-        );
-        assert_eq!(
-            store.list().unwrap().proposals[0].proposal.review,
-            Review::Pending
-        );
-    }
-
-    #[test]
-    fn approve_edit_outside_git_is_refused() {
+    fn plain_proposals_directory_is_used_as_fallback() {
         let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("src")).unwrap();
-        fs::write(dir.path().join("src/main.rs"), "one\n").unwrap();
-        write_proposal(dir.path(), "e", &edit_json("one\n", "ONE\n"));
+        let proposals = dir.path().join("proposals");
+        fs::create_dir(&proposals).unwrap();
+        fs::write(proposals.join("one.json"), CREATE).unwrap();
         let store = Store::new(dir.path());
-        assert!(matches!(store.approve("e"), Err(ReviewError::Apply(_))));
-        assert_eq!(
-            fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
-            "one\n"
+
+        let listing = store.list().unwrap();
+        assert_eq!(listing.proposals[0].id, "one");
+        assert_eq!(listing.source, proposals.display().to_string());
+
+        store.approve("one").unwrap();
+        assert!(dir.path().join("src/a.rs").exists());
+        assert!(
+            fs::read_to_string(proposals.join("one.json"))
+                .unwrap()
+                .contains("approved")
         );
+    }
+
+    #[test]
+    fn syntra_directory_takes_priority_over_plain_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        write_proposal(dir.path(), "main", CREATE);
+        fs::create_dir(dir.path().join("proposals")).unwrap();
+        fs::write(dir.path().join("proposals/plain.json"), CREATE).unwrap();
+        let listing = Store::new(dir.path()).list().unwrap();
+        assert_eq!(listing.proposals.len(), 1);
+        assert_eq!(listing.proposals[0].id, "main");
+    }
+
+    #[test]
+    fn proposal_cannot_write_into_proposals_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let proposals = dir.path().join("proposals");
+        fs::create_dir(&proposals).unwrap();
+        fs::write(
+            proposals.join("one.json"),
+            create_json("proposals/", "x.json"),
+        )
+        .unwrap();
+        assert!(matches!(
+            Store::new(dir.path()).approve("one"),
+            Err(ReviewError::UnsafePath(_))
+        ));
+        assert!(!proposals.join("x.json").exists());
+    }
+
+    #[test]
+    fn workspace_root_understands_proposals_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let plain = root.join("plain/proposals");
+        fs::create_dir_all(&plain).unwrap();
+        fs::write(plain.join("one.json"), CREATE).unwrap();
+        let source = root.join("code/proposals");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("mod.rs"), "").unwrap();
+
+        assert_eq!(Store::workspace_root(&plain), root.join("plain"));
+        assert_eq!(
+            Store::workspace_root(&root.join("w/.syntra/proposals")),
+            root.join("w")
+        );
+        assert_eq!(Store::workspace_root(&source), source);
+        assert_eq!(Store::workspace_root(&root.join("x/")), root.join("x"));
+    }
+
+    #[test]
+    fn previously_recorded_commit_field_is_ignored() {
+        let proposal: Proposal = serde_json::from_str(
+            r#"{"kind":"create","file_name":"a","content":"","purpose":"","location":"",
+                "review":{"status":"approved","commit":"abc"}}"#,
+        )
+        .unwrap();
+        assert_eq!(proposal.review, Review::Approved);
     }
 
     #[test]
