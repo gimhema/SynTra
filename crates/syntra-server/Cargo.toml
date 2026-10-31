@@ -1,0 +1,17 @@
+[package]
+name = "syntra-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "syntra"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+syntra-core = { path = "../syntra-core" }
+tokio.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
