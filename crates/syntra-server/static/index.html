@@ -4,9 +4,110 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SynTra</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 16px; }
+    .cell { border: 1px solid #8888; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
+    .cell h2 { font-size: 1rem; margin: 0 0 8px; overflow-wrap: anywhere; }
+    .label { font-size: .8rem; opacity: .7; margin: 12px 0 4px; }
+    pre { background: #8881; padding: 8px; margin: 0; overflow-x: auto; }
+    textarea { width: 100%; box-sizing: border-box; min-height: 64px; font: inherit; }
+    .error { color: #d33; }
+    .rejected { border-left: 4px solid #d33; padding-left: 8px; white-space: pre-wrap; }
+  </style>
 </head>
 <body>
   <h1>SynTra</h1>
-  <p>검토할 생성안/편집안이 없습니다.</p>
+  <p id="message" class="error" role="alert"></p>
+  <div id="cells"></div>
+  <script>
+    const cells = document.getElementById('cells');
+    const message = document.getElementById('message');
+
+    // 제안서 내용은 에이전트가 작성한 것이므로 textContent로만 출력한다.
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function field(parent, label, text, Tag = 'p') {
+      parent.append(el('div', 'label', label), el(Tag, '', text));
+    }
+
+    function reviewSection(proposal) {
+      const box = el('div');
+      if (proposal.review.status === 'rejected') {
+        box.append(el('div', 'label', '거부됨 · 사유'), el('p', 'rejected', proposal.review.reason));
+        return box;
+      }
+      const textarea = el('textarea');
+      textarea.placeholder = '거부 사유 (필수)';
+      textarea.setAttribute('aria-label', '거부 사유');
+      const button = el('button', '', '거부');
+      button.disabled = true;
+      textarea.addEventListener('input', () => { button.disabled = !textarea.value.trim(); });
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        await reject(proposal.id, textarea.value);
+        button.disabled = !textarea.value.trim();
+      });
+      box.append(el('div', 'label', '검토'), textarea, button);
+      return box;
+    }
+
+    function proposalCell(proposal) {
+      const cell = el('section', 'cell');
+      if (proposal.kind === 'create') {
+        cell.append(el('h2', '', `생성 · ${proposal.file_name}`));
+        field(cell, '배치 위치', proposal.location);
+        field(cell, '생성 목적', proposal.purpose);
+        field(cell, '코드 내용', proposal.content, 'pre');
+      } else {
+        cell.append(el('h2', '', `편집 · ${proposal.file_name}`));
+        proposal.regions.forEach((region, i) => {
+          cell.append(el('div', 'label', `영역 ${i + 1}`));
+          field(cell, '편집 목적', region.purpose);
+          field(cell, '편집 전', region.before, 'pre');
+          field(cell, '편집 후', region.after, 'pre');
+        });
+      }
+      cell.append(reviewSection(proposal));
+      return cell;
+    }
+
+    async function load() {
+      const response = await fetch('/api/proposals');
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      cells.replaceChildren(
+        ...body.proposals.map(proposalCell),
+        ...body.invalid.map((item) => {
+          const cell = el('section', 'cell');
+          cell.append(el('h2', 'error', `읽을 수 없는 파일 · ${item.file}`), el('p', '', item.error));
+          return cell;
+        }),
+      );
+      if (!cells.children.length) cells.append(el('p', '', '검토할 생성안/편집안이 없습니다.'));
+    }
+
+    async function reject(id, reason) {
+      message.textContent = '';
+      try {
+        const response = await fetch(`/api/proposals/${encodeURIComponent(id)}/reject`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        });
+        if (!response.ok) throw new Error((await response.json()).error);
+        await load();
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    }
+
+    load().catch((error) => { message.textContent = error.message; });
+  </script>
 </body>
 </html>
