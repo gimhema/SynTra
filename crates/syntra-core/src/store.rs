@@ -239,6 +239,14 @@ mod tests {
     }
 
     #[test]
+    fn bundled_examples_are_valid() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/proposals");
+        let listing = Store::new(dir).list().unwrap();
+        assert_eq!(listing.proposals.len(), 2);
+        assert!(listing.invalid.is_empty());
+    }
+
+    #[test]
     fn missing_directory_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         let listing = Store::new(dir.path().join("none")).list().unwrap();

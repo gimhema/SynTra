@@ -34,3 +34,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```json
 "review": { "status": "rejected", "reason": "..." }
 ```
+
+## 예제
+
+생성안과 편집안 예제가 [examples/proposals](examples/proposals)에 있습니다.
+
+```sh
+SYNTRA_PROPOSALS=examples/proposals cargo run -p syntra-server
+```
+
+PowerShell에서는 `$env:SYNTRA_PROPOSALS="examples/proposals"; cargo run -p syntra-server`로 실행합니다.
+
+예제를 거부하면 예제 파일에 사유가 기록됩니다. 되돌리려면 `git restore examples/proposals`를 실행하세요.

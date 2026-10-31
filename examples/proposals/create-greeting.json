@@ -1,0 +1,7 @@
+{
+  "kind": "create",
+  "file_name": "greeting.rs",
+  "content": "pub fn greeting(name: &str) -> String {\n    format!(\"안녕하세요, {name}님!\")\n}\n",
+  "purpose": "여러 곳에서 쓰는 인사말 문구를 한 함수로 모은다.",
+  "location": "src/"
+}

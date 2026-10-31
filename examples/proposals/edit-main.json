@@ -1,0 +1,16 @@
+{
+  "kind": "edit",
+  "file_name": "src/main.rs",
+  "regions": [
+    {
+      "before": "fn main() {\n",
+      "after": "mod greeting;\n\nfn main() {\n",
+      "purpose": "새로 추가한 greeting 모듈을 불러온다."
+    },
+    {
+      "before": "    println!(\"안녕하세요, 철수님!\");\n",
+      "after": "    println!(\"{}\", greeting::greeting(\"철수\"));\n",
+      "purpose": "직접 쓴 문구를 공용 함수 호출로 바꿔 문구가 중복되지 않게 한다."
+    }
+  ]
+}
