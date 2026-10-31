@@ -5,24 +5,311 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SynTra</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 16px; }
-    .cell { border: 1px solid #8888; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
-    .cell h2 { font-size: 1rem; margin: 0 0 8px; overflow-wrap: anywhere; }
-    .label { font-size: .8rem; opacity: .7; margin: 12px 0 4px; }
-    pre { background: #8881; padding: 8px; margin: 0; overflow-x: auto; }
-    textarea { width: 100%; box-sizing: border-box; min-height: 64px; font: inherit; }
-    .error { color: #d33; }
-    .rejected { border-left: 4px solid #d33; padding-left: 8px; white-space: pre-wrap; }
+    :root {
+      color-scheme: light dark;
+      --bg: #faf9f7;
+      --sidebar: #f2f0eb;
+      --surface: #ffffff;
+      --hover: #e8e5de;
+      --selected: #e2dfd6;
+      --border: #e3e0d8;
+      --text: #2b2a27;
+      --muted: #6f6b62;
+      --accent: #b9502f;
+      --accent-text: #ffffff;
+      --del-bg: #fbeeeb;
+      --del-text: #a23a26;
+      --add-bg: #eaf5ec;
+      --add-text: #24713c;
+      --code-bg: #f4f2ee;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1f1e1c;
+        --sidebar: #181816;
+        --surface: #2a2926;
+        --hover: #282724;
+        --selected: #33312d;
+        --border: #3a3834;
+        --text: #ece9e2;
+        --muted: #a5a096;
+        --accent: #d9734f;
+        --accent-text: #1f1e1c;
+        --del-bg: #3a2420;
+        --del-text: #f0a493;
+        --add-bg: #1f3325;
+        --add-text: #8fd3a2;
+        --code-bg: #262522;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", "Noto Sans KR", sans-serif;
+    }
+    button, textarea { font: inherit; color: inherit; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    /* 워크스페이스 선택 화면 */
+    #home { height: 100dvh; overflow-y: auto; padding: 48px 16px; }
+    .home-column { width: 100%; max-width: 620px; margin: 0 auto; }
+    .home-title { margin: 0 0 4px; font-size: 28px; font-weight: 600; }
+    .home-sub { margin-bottom: 28px; color: var(--muted); }
+    .home-section { margin-bottom: 24px; }
+    .home-label { margin-bottom: 6px; font-size: 13px; color: var(--muted); }
+    .panel {
+      padding: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+    }
+    .path-form { display: flex; gap: 8px; margin-bottom: 6px; }
+    .path-form input {
+      flex: 1;
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: inherit;
+      font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    }
+    .folders { max-height: 40dvh; overflow-y: auto; }
+    .folder-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 6px 4px;
+      border-top: 1px solid var(--border);
+      margin-top: 6px;
+    }
+    .hint { font-size: 12px; color: var(--muted); }
+    .item.mono .item-name { font: 13px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace; }
+
+    /* 공통 버튼 */
+    .btn {
+      flex: none;
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: none;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn:hover:not(:disabled) { background: var(--hover); }
+    .btn.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-text); font-weight: 600; }
+    .btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+    .btn:disabled { color: var(--muted); cursor: default; }
+
+    /* 사이드바 */
+    #app {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      height: 100dvh;
+    }
+    aside {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+    }
+    .brand { padding: 18px 20px 2px; font-size: 17px; font-weight: 600; }
+    .workspace {
+      display: block;
+      width: calc(100% - 20px);
+      margin: 0 10px 6px;
+      padding: 4px 10px;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      font-size: 12px;
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+    }
+    .workspace:hover { background: var(--hover); }
+    .workspace span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    nav { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 16px; }
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      padding: 12px 10px 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .item {
+      display: block;
+      width: 100%;
+      padding: 8px 10px;
+      margin-bottom: 2px;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      text-align: left;
+      cursor: pointer;
+    }
+    .item:hover { background: var(--hover); }
+    .item[aria-current="true"] { background: var(--selected); }
+    .item-name, .item-sub {
+      display: block;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .item-name { font-size: 14px; }
+    .item-sub { font-size: 12px; color: var(--muted); }
+    .empty-list { padding: 4px 10px; font-size: 13px; color: var(--muted); }
+
+    /* 상세 화면 */
+    main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    #detail { flex: 1; min-height: 0; overflow-y: auto; padding: 40px 24px 24px; }
+    .column { width: 100%; max-width: 760px; margin: 0 auto; }
+    .kind { font-size: 13px; color: var(--muted); }
+    h1 { margin: 2px 0 20px; font-size: 22px; font-weight: 600; overflow-wrap: anywhere; }
+    h2 { margin: 28px 0 8px; font-size: 14px; font-weight: 600; }
+    p { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .meta { color: var(--muted); }
+    .placeholder {
+      display: grid;
+      place-items: center;
+      height: 100%;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .code {
+      margin-bottom: 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--code-bg);
+    }
+    .code-label {
+      padding: 6px 12px;
+      font-size: 12px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .code.del .code-label { background: var(--del-bg); color: var(--del-text); }
+    .code.add .code-label { background: var(--add-bg); color: var(--add-text); }
+    pre {
+      margin: 0;
+      padding: 12px;
+      overflow-x: auto;
+      font: 13px/1.55 ui-monospace, "Cascadia Code", Consolas, "D2Coding", monospace;
+    }
+    .diff { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+
+    /* 거부 입력창 */
+    #composer { padding: 0 24px 20px; }
+    .composer-box {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      padding: 10px 10px 10px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 2px 10px rgb(0 0 0 / 6%);
+    }
+    .composer-box:focus-within { border-color: var(--muted); }
+    textarea {
+      flex: 1;
+      min-width: 0;
+      max-height: 160px;
+      padding: 5px 0;
+      border: 0;
+      outline: 0;
+      resize: none;
+      background: none;
+      field-sizing: content;
+    }
+    textarea::placeholder { color: var(--muted); }
+    .composer-hint { padding: 6px 16px 0; font-size: 12px; color: var(--muted); }
+
+    #toast {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: calc(100vw - 32px);
+      padding: 8px 16px;
+      border-radius: 10px;
+      background: var(--text);
+      color: var(--bg);
+      font-size: 14px;
+    }
+    #toast:empty { display: none; }
+
+    @media (max-width: 720px) {
+      #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+      aside { max-height: 35dvh; border-right: 0; border-bottom: 1px solid var(--border); }
+      .brand { padding: 12px 16px 0; }
+      #detail { padding: 20px 16px 16px; }
+      #composer { padding: 0 16px 12px; }
+      .diff { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    }
   </style>
 </head>
 <body>
-  <h1>SynTra</h1>
-  <p id="message" class="error" role="alert"></p>
-  <div id="cells"></div>
+  <div id="home" hidden>
+    <div class="home-column">
+      <h1 class="home-title">SynTra</h1>
+      <p class="home-sub">검토할 워크스페이스를 선택하세요.</p>
+      <div id="recent" class="home-section"></div>
+      <div class="home-section">
+        <div class="home-label">폴더 찾아보기</div>
+        <div class="panel">
+          <form id="path-form" class="path-form">
+            <input id="path-input" aria-label="폴더 경로" spellcheck="false" autocomplete="off">
+            <button class="btn" type="submit">이동</button>
+          </form>
+          <div id="folders" class="folders"></div>
+          <div class="folder-footer">
+            <span id="folder-hint" class="hint"></span>
+            <button id="open-folder" class="btn primary" type="button">이 폴더 열기</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="app" hidden>
+    <aside>
+      <div class="brand">SynTra</div>
+      <button id="workspace" class="workspace" type="button"></button>
+      <nav id="list" aria-label="승인 대기 목록"></nav>
+    </aside>
+    <main>
+      <div id="detail"></div>
+      <div id="composer"></div>
+    </main>
+  </div>
+  <div id="toast" role="status"></div>
   <script>
-    const cells = document.getElementById('cells');
-    const message = document.getElementById('message');
+    const home = document.getElementById('home');
+    const app = document.getElementById('app');
+    const recentBox = document.getElementById('recent');
+    const folders = document.getElementById('folders');
+    const pathInput = document.getElementById('path-input');
+    const folderHint = document.getElementById('folder-hint');
+    const workspaceButton = document.getElementById('workspace');
+    const list = document.getElementById('list');
+    const detail = document.getElementById('detail');
+    const composer = document.getElementById('composer');
+    const toast = document.getElementById('toast');
+
+    let pending = [];
+    let invalid = [];
+    let selected = null;
+    const drafts = new Map();
+    let toastTimer;
 
     // 제안서 내용은 에이전트가 작성한 것이므로 textContent로만 출력한다.
     function el(tag, className, text) {
@@ -32,82 +319,280 @@
       return node;
     }
 
-    function field(parent, label, text, Tag = 'p') {
-      parent.append(el('div', 'label', label), el(Tag, '', text));
+    function codeBlock(label, code, variant = '') {
+      const block = el('div', `code ${variant}`);
+      block.append(el('div', 'code-label', label));
+      const pre = el('pre');
+      pre.append(el('code', '', code));
+      block.append(pre);
+      return block;
     }
 
-    function reviewSection(proposal) {
-      const box = el('div');
-      if (proposal.review.status === 'rejected') {
-        box.append(el('div', 'label', '거부됨 · 사유'), el('p', 'rejected', proposal.review.reason));
-        return box;
-      }
-      const textarea = el('textarea');
-      textarea.placeholder = '거부 사유 (필수)';
-      textarea.setAttribute('aria-label', '거부 사유');
-      const button = el('button', '', '거부');
-      button.disabled = true;
-      textarea.addEventListener('input', () => { button.disabled = !textarea.value.trim(); });
-      button.addEventListener('click', async () => {
-        button.disabled = true;
-        await reject(proposal.id, textarea.value);
-        button.disabled = !textarea.value.trim();
+    function showToast(text, duration = 4000) {
+      clearTimeout(toastTimer);
+      toast.textContent = text;
+      toastTimer = setTimeout(() => { toast.textContent = ''; }, duration);
+    }
+
+    function showError(error) {
+      showToast(error.message, 10000);
+    }
+
+    async function api(url, options) {
+      const response = await fetch(url, options);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      return body;
+    }
+
+    function postJson(url, data) {
+      return api(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
       });
-      box.append(el('div', 'label', '검토'), textarea, button);
-      return box;
     }
 
-    function proposalCell(proposal) {
-      const cell = el('section', 'cell');
+    function button(className, name, sub, onClick) {
+      const item = el('button', className);
+      item.type = 'button';
+      item.append(el('span', 'item-name', name));
+      if (sub) item.append(el('span', 'item-sub', sub));
+      item.addEventListener('click', onClick);
+      return item;
+    }
+
+    function listItem(key, name, sub) {
+      const item = button('item', name, sub, () => select(key));
+      item.setAttribute('aria-current', String(key === selected));
+      return item;
+    }
+
+    function sectionTitle(title, count) {
+      const header = el('div', 'section-title');
+      header.append(el('span', '', title), el('span', '', String(count)));
+      return header;
+    }
+
+    function renderList() {
+      list.replaceChildren(sectionTitle('승인 대기', pending.length));
+      if (!pending.length) list.append(el('div', 'empty-list', '대기 중인 항목이 없습니다'));
+      for (const proposal of pending) {
+        const sub = proposal.kind === 'create'
+          ? `생성 · ${proposal.location}`
+          : `편집 · 영역 ${proposal.regions.length}개`;
+        list.append(listItem(`p:${proposal.id}`, proposal.file_name, sub));
+      }
+      if (invalid.length) {
+        list.append(sectionTitle('읽을 수 없는 파일', invalid.length));
+        for (const item of invalid) list.append(listItem(`i:${item.file}`, item.file, '오류'));
+      }
+    }
+
+    function renderProposal(proposal) {
+      const column = el('div', 'column');
       if (proposal.kind === 'create') {
-        cell.append(el('h2', '', `생성 · ${proposal.file_name}`));
-        field(cell, '배치 위치', proposal.location);
-        field(cell, '생성 목적', proposal.purpose);
-        field(cell, '코드 내용', proposal.content, 'pre');
+        column.append(el('div', 'kind', '생성'), el('h1', '', proposal.file_name));
+        column.append(el('h2', '', '생성 목적'), el('p', '', proposal.purpose));
+        column.append(el('h2', '', '배치 위치'), el('p', 'meta', proposal.location));
+        column.append(el('h2', '', '코드 내용'), codeBlock(proposal.file_name, proposal.content));
       } else {
-        cell.append(el('h2', '', `편집 · ${proposal.file_name}`));
+        column.append(el('div', 'kind', '편집'), el('h1', '', proposal.file_name));
         proposal.regions.forEach((region, i) => {
-          cell.append(el('div', 'label', `영역 ${i + 1}`));
-          field(cell, '편집 목적', region.purpose);
-          field(cell, '편집 전', region.before, 'pre');
-          field(cell, '편집 후', region.after, 'pre');
+          column.append(el('h2', '', `영역 ${i + 1}`), el('p', '', region.purpose));
+          const diff = el('div', 'diff');
+          diff.append(codeBlock('편집 전', region.before, 'del'), codeBlock('편집 후', region.after, 'add'));
+          column.append(diff);
         });
       }
-      cell.append(reviewSection(proposal));
-      return cell;
+      return column;
+    }
+
+    function renderComposer(proposal) {
+      const { id } = proposal;
+      const box = el('div', 'composer-box');
+      const textarea = el('textarea');
+      textarea.rows = 1;
+      textarea.placeholder = '거부하려면 사유를 입력하세요';
+      textarea.setAttribute('aria-label', '거부 사유');
+      textarea.value = drafts.get(id) ?? '';
+      const rejectButton = el('button', 'btn', '거부');
+      rejectButton.type = 'button';
+      rejectButton.disabled = !textarea.value.trim();
+      const approveButton = el('button', 'btn primary', '승인');
+      approveButton.type = 'button';
+      textarea.addEventListener('input', () => {
+        drafts.set(id, textarea.value);
+        rejectButton.disabled = !textarea.value.trim();
+      });
+      rejectButton.addEventListener('click', async () => {
+        rejectButton.disabled = approveButton.disabled = true;
+        await reject(id, textarea.value);
+        rejectButton.disabled = !textarea.value.trim();
+        approveButton.disabled = false;
+      });
+      approveButton.addEventListener('click', async () => {
+        rejectButton.disabled = approveButton.disabled = true;
+        await approve(id);
+        rejectButton.disabled = !textarea.value.trim();
+        approveButton.disabled = false;
+      });
+      box.append(textarea, rejectButton, approveButton);
+      const hint = proposal.kind === 'create'
+        ? '승인하면 파일이 배치 위치에 생성됩니다.'
+        : '승인하면 편집이 적용되고 이 파일만 바로 커밋됩니다.';
+      const column = el('div', 'column');
+      column.append(box, el('div', 'composer-hint', hint));
+      composer.replaceChildren(column);
+    }
+
+    function renderDetail() {
+      composer.replaceChildren();
+      detail.scrollTop = 0;
+      const proposal = pending.find((p) => `p:${p.id}` === selected);
+      const broken = invalid.find((item) => `i:${item.file}` === selected);
+      if (proposal) {
+        detail.replaceChildren(renderProposal(proposal));
+        renderComposer(proposal);
+      } else if (broken) {
+        const column = el('div', 'column');
+        column.append(el('div', 'kind', '읽을 수 없는 파일'), el('h1', '', broken.file));
+        column.append(el('p', '', broken.error));
+        detail.replaceChildren(column);
+      } else {
+        detail.replaceChildren(el('div', 'placeholder', '검토할 제안서가 없습니다'));
+      }
+    }
+
+    function render() {
+      renderList();
+      renderDetail();
+    }
+
+    function select(key) {
+      selected = key;
+      history.replaceState(null, '', `#${encodeURIComponent(key)}`);
+      render();
     }
 
     async function load() {
-      const response = await fetch('/api/proposals');
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error);
-      cells.replaceChildren(
-        ...body.proposals.map(proposalCell),
-        ...body.invalid.map((item) => {
-          const cell = el('section', 'cell');
-          cell.append(el('h2', 'error', `읽을 수 없는 파일 · ${item.file}`), el('p', '', item.error));
-          return cell;
-        }),
-      );
-      if (!cells.children.length) cells.append(el('p', '', '검토할 생성안/편집안이 없습니다.'));
+      const body = await api('/api/proposals');
+      pending = body.proposals.filter((p) => p.review.status === 'pending');
+      invalid = body.invalid;
+      const keys = [...pending.map((p) => `p:${p.id}`), ...invalid.map((item) => `i:${item.file}`)];
+      if (!keys.includes(selected)) selected = keys[0] ?? null;
+      render();
     }
 
-    async function reject(id, reason) {
-      message.textContent = '';
+    async function approve(id) {
       try {
-        const response = await fetch(`/api/proposals/${encodeURIComponent(id)}/reject`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason }),
-        });
-        if (!response.ok) throw new Error((await response.json()).error);
+        const body = await api(`/api/proposals/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+        drafts.delete(id);
         await load();
+        const { commit } = body.review;
+        showToast(commit ? `승인했습니다. 커밋 ${commit.slice(0, 7)}` : '승인했습니다. 파일을 생성했습니다.');
       } catch (error) {
-        message.textContent = error.message;
+        showError(error);
       }
     }
 
-    load().catch((error) => { message.textContent = error.message; });
+    async function reject(id, reason) {
+      try {
+        await postJson(`/api/proposals/${encodeURIComponent(id)}/reject`, { reason });
+        drafts.delete(id);
+        await load();
+        showToast('거부했습니다. 사유가 제안서에 기록되었습니다.');
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    function folderName(path) {
+      return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+    }
+
+    function joinPath(parent, name) {
+      const separator = parent.includes('\\') ? '\\' : '/';
+      return parent.endsWith(separator) ? parent + name : parent + separator + name;
+    }
+
+    async function browse(path) {
+      const query = path ? `?path=${encodeURIComponent(path)}` : '';
+      const folder = await api(`/api/browse${query}`);
+      pathInput.value = folder.path;
+      folderHint.textContent = folder.is_git
+        ? 'git 저장소'
+        : 'git 저장소가 아닙니다. 편집안은 승인할 수 없습니다.';
+      const rows = [];
+      for (const drive of folder.drives) {
+        rows.push(button('item mono', drive, '', () => browse(drive).catch(showError)));
+      }
+      if (folder.parent) {
+        rows.push(button('item mono', '..', '', () => browse(folder.parent).catch(showError)));
+      }
+      for (const name of folder.dirs) {
+        rows.push(button('item mono', name, '', () => browse(joinPath(folder.path, name)).catch(showError)));
+      }
+      folders.replaceChildren(...rows);
+    }
+
+    async function openWorkspace(path) {
+      const info = await postJson('/api/workspace', { path });
+      await showApp(info.current);
+    }
+
+    function renderRecent(recent) {
+      recentBox.replaceChildren();
+      if (!recent.length) return;
+      const panel = el('div', 'panel');
+      for (const path of recent) {
+        panel.append(button('item', folderName(path), path, () => openWorkspace(path).catch(showError)));
+      }
+      recentBox.append(el('div', 'home-label', '최근 워크스페이스'), panel);
+    }
+
+    async function showHome(recent) {
+      app.hidden = true;
+      home.hidden = false;
+      renderRecent(recent);
+      await browse(pathInput.value || null);
+    }
+
+    async function showApp(path) {
+      home.hidden = true;
+      app.hidden = false;
+      workspaceButton.replaceChildren(el('span', '', `${folderName(path)} · 변경`));
+      workspaceButton.title = path;
+      await load();
+    }
+
+    document.getElementById('path-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      browse(pathInput.value).catch(showError);
+    });
+    document.getElementById('open-folder').addEventListener('click', () => {
+      openWorkspace(pathInput.value).catch(showError);
+    });
+    workspaceButton.addEventListener('click', async () => {
+      try {
+        const info = await api('/api/workspace', { method: 'DELETE' });
+        selected = null;
+        drafts.clear();
+        history.replaceState(null, '', location.pathname);
+        await showHome(info.recent);
+      } catch (error) {
+        showError(error);
+      }
+    });
+
+    async function start() {
+      selected = decodeURIComponent(location.hash.slice(1)) || null;
+      const info = await api('/api/workspace');
+      if (info.current) await showApp(info.current);
+      else await showHome(info.recent);
+    }
+
+    start().catch(showError);
   </script>
 </body>
 </html>

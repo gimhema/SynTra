@@ -5,11 +5,15 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 
+use crate::apply::apply;
 use crate::model::{Proposal, Review};
 
-/// 제안서 디렉터리. 제안서 하나가 `<id>.json` 파일 하나에 대응한다.
+const PROPOSALS_DIR: &str = ".syntra/proposals";
+
+/// 워크스페이스의 제안서 디렉터리. 제안서 하나가 `<id>.json` 파일 하나에 대응한다.
 #[derive(Debug)]
 pub struct Store {
+    root: PathBuf,
     dir: PathBuf,
     write_lock: Mutex<()>,
 }
@@ -35,13 +39,17 @@ pub struct Listing {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum RejectError {
+pub enum ReviewError {
     #[error("거부 사유를 입력해야 합니다")]
     BlankReason,
     #[error("제안서를 찾을 수 없습니다: {0}")]
     NotFound(String),
     #[error("이미 처리된 제안서입니다: {0}")]
     AlreadyReviewed(String),
+    #[error("적용할 수 없습니다. {0}")]
+    Apply(String),
+    #[error("허용되지 않는 경로입니다: {0}")]
+    UnsafePath(String),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error("제안서 파일을 읽을 수 없습니다: {0}")]
@@ -49,9 +57,11 @@ pub enum RejectError {
 }
 
 impl Store {
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
         Self {
-            dir: dir.into(),
+            dir: root.join(PROPOSALS_DIR),
+            root,
             write_lock: Mutex::new(()),
         }
     }
@@ -86,40 +96,58 @@ impl Store {
         Ok(listing)
     }
 
+    /// 제안서를 워크스페이스에 적용하고 승인 상태로 기록한다. 적용에 실패하면 대기 상태로 남는다.
+    pub fn approve(&self, id: &str) -> Result<Proposal, ReviewError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proposal = self.load_pending(id)?;
+        let commit = apply(&self.root, &proposal.change)?;
+        proposal.review = Review::Approved { commit };
+        self.save(id, &proposal)?;
+        Ok(proposal)
+    }
+
     /// 제안서를 거부 상태로 기록한다. 제안서 파일 외에는 아무것도 변경하지 않는다.
-    pub fn reject(&self, id: &str, reason: &str) -> Result<Proposal, RejectError> {
+    pub fn reject(&self, id: &str, reason: &str) -> Result<Proposal, ReviewError> {
         let reason = reason.trim();
         if reason.is_empty() {
-            return Err(RejectError::BlankReason);
-        }
-        // id는 URL에서 오므로 디렉터리 밖을 가리키지 못하게 막는다.
-        if !is_valid_id(id) {
-            return Err(RejectError::NotFound(id.to_string()));
+            return Err(ReviewError::BlankReason);
         }
 
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proposal = self.load_pending(id)?;
+        proposal.review = Review::Rejected {
+            reason: reason.to_string(),
+        };
+        self.save(id, &proposal)?;
+        Ok(proposal)
+    }
+
+    fn load_pending(&self, id: &str) -> Result<Proposal, ReviewError> {
+        // id는 URL에서 오므로 디렉터리 밖을 가리키지 못하게 막는다.
+        if !is_valid_id(id) {
+            return Err(ReviewError::NotFound(id.to_string()));
+        }
         let path = self.dir.join(format!("{id}.json"));
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(RejectError::NotFound(id.to_string()));
+                return Err(ReviewError::NotFound(id.to_string()));
             }
             Err(e) => return Err(e.into()),
         };
-
-        let mut proposal: Proposal = serde_json::from_str(&text)?;
+        let proposal: Proposal = serde_json::from_str(&text)?;
         if proposal.review != Review::Pending {
-            return Err(RejectError::AlreadyReviewed(id.to_string()));
+            return Err(ReviewError::AlreadyReviewed(id.to_string()));
         }
-        proposal.review = Review::Rejected {
-            reason: reason.to_string(),
-        };
+        Ok(proposal)
+    }
 
+    fn save(&self, id: &str, proposal: &Proposal) -> Result<(), ReviewError> {
         // 쓰기 도중 실패해도 원본이 깨지지 않도록 임시 파일을 거쳐 교체한다.
         let tmp = self.dir.join(format!("{id}.json.tmp"));
-        fs::write(&tmp, serde_json::to_vec_pretty(&proposal)?)?;
-        fs::rename(&tmp, &path)?;
-        Ok(proposal)
+        fs::write(&tmp, serde_json::to_vec_pretty(proposal)?)?;
+        fs::rename(&tmp, self.dir.join(format!("{id}.json")))?;
+        Ok(())
     }
 }
 
@@ -146,14 +174,72 @@ fn read_entry(path: &Path) -> Result<Entry, String> {
 mod tests {
     use super::*;
     use crate::model::Change;
+    use std::process::Command;
 
     const CREATE: &str = r#"{"kind":"create","file_name":"a.rs","content":"fn a() {}","purpose":"p","location":"src/"}"#;
 
+    fn proposal_path(root: &Path, id: &str) -> PathBuf {
+        root.join(PROPOSALS_DIR).join(format!("{id}.json"))
+    }
+
+    fn write_proposal(root: &Path, id: &str, json: &str) {
+        fs::create_dir_all(root.join(PROPOSALS_DIR)).unwrap();
+        fs::write(proposal_path(root, id), json).unwrap();
+    }
+
     fn store_with(id: &str, json: &str) -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(format!("{id}.json")), json).unwrap();
+        write_proposal(dir.path(), id, json);
         let store = Store::new(dir.path());
         (dir, store)
+    }
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// `src/main.rs`가 커밋된 저장소를 만든다.
+    fn repo() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.name", "test"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "core.autocrlf", "false"]);
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "one\ntwo\ntwo\n").unwrap();
+        fs::write(root.join("other.txt"), "x\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "init"]);
+        let store = Store::new(root);
+        (dir, store)
+    }
+
+    fn edit_json(before: &str, after: &str) -> String {
+        serde_json::json!({
+            "kind": "edit",
+            "file_name": "src/main.rs",
+            "regions": [{"before": before, "after": after, "purpose": "목적"}],
+        })
+        .to_string()
+    }
+
+    fn create_json(location: &str, file_name: &str) -> String {
+        serde_json::json!({
+            "kind": "create",
+            "file_name": file_name,
+            "content": "new\n",
+            "purpose": "p",
+            "location": location,
+        })
+        .to_string()
     }
 
     #[test]
@@ -185,24 +271,20 @@ mod tests {
         for reason in ["", "  \n\t "] {
             assert!(matches!(
                 store.reject("one", reason),
-                Err(RejectError::BlankReason)
+                Err(ReviewError::BlankReason)
             ));
         }
         assert_eq!(
-            fs::read_to_string(dir.path().join("one.json")).unwrap(),
+            fs::read_to_string(proposal_path(dir.path(), "one")).unwrap(),
             CREATE
         );
     }
 
     #[test]
-    fn reject_only_touches_the_proposal_file() {
+    fn reject_does_not_apply_the_change() {
         let (dir, store) = store_with("one", CREATE);
         store.reject("one", "사유").unwrap();
-        let names: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(names, ["one.json"]);
+        assert!(!dir.path().join("src").exists());
     }
 
     #[test]
@@ -211,7 +293,7 @@ mod tests {
         store.reject("one", "첫 사유").unwrap();
         assert!(matches!(
             store.reject("one", "둘째 사유"),
-            Err(RejectError::AlreadyReviewed(_))
+            Err(ReviewError::AlreadyReviewed(_))
         ));
         assert_eq!(
             store.list().unwrap().proposals[0].proposal.review,
@@ -226,7 +308,7 @@ mod tests {
         let (_dir, store) = store_with("one", CREATE);
         assert!(matches!(
             store.reject("../one", "사유"),
-            Err(RejectError::NotFound(_))
+            Err(ReviewError::NotFound(_))
         ));
     }
 
@@ -239,17 +321,206 @@ mod tests {
     }
 
     #[test]
-    fn bundled_examples_are_valid() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/proposals");
-        let listing = Store::new(dir).list().unwrap();
-        assert_eq!(listing.proposals.len(), 2);
-        assert!(listing.invalid.is_empty());
-    }
-
-    #[test]
     fn missing_directory_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         let listing = Store::new(dir.path().join("none")).list().unwrap();
         assert!(listing.proposals.is_empty());
+    }
+
+    #[test]
+    fn approve_create_places_file_without_commit() {
+        let (dir, store) = repo();
+        write_proposal(dir.path(), "c", &create_json("src/new/", "a.rs"));
+        let proposal = store.approve("c").unwrap();
+        assert_eq!(proposal.review, Review::Approved { commit: None });
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/new/a.rs")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            git(dir.path(), &["rev-list", "--count", "HEAD"]).trim(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn approve_create_never_overwrites() {
+        let (dir, store) = repo();
+        write_proposal(dir.path(), "c", &create_json("", "other.txt"));
+        assert!(matches!(store.approve("c"), Err(ReviewError::Apply(_))));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("other.txt")).unwrap(),
+            "x\n"
+        );
+        assert_eq!(
+            store.list().unwrap().proposals[0].proposal.review,
+            Review::Pending
+        );
+    }
+
+    #[test]
+    fn unsafe_paths_are_refused() {
+        let (dir, store) = repo();
+        let outside = dir.path().join("../syntra-escape.txt");
+        let cases = [
+            ("../", "syntra-escape.txt"),
+            ("src/../../", "syntra-escape.txt"),
+            (".git/hooks/", "pre-commit"),
+            (".GIT/hooks/", "pre-commit"),
+            (".syntra/proposals/", "x.json"),
+            ("", ""),
+        ];
+        for (location, file_name) in cases {
+            write_proposal(dir.path(), "c", &create_json(location, file_name));
+            assert!(
+                matches!(store.approve("c"), Err(ReviewError::UnsafePath(_))),
+                "{location}{file_name}"
+            );
+        }
+        let absolute = outside.display().to_string();
+        write_proposal(dir.path(), "c", &create_json(&absolute, "a"));
+        assert!(matches!(
+            store.approve("c"),
+            Err(ReviewError::UnsafePath(_))
+        ));
+        assert!(!outside.exists());
+        assert!(!dir.path().join(".git/hooks/pre-commit").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_escape_is_refused() {
+        let (dir, store) = repo();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
+        write_proposal(dir.path(), "c", &create_json("link/", "a.rs"));
+        assert!(matches!(
+            store.approve("c"),
+            Err(ReviewError::UnsafePath(_))
+        ));
+        assert!(!outside.path().join("a.rs").exists());
+    }
+
+    #[test]
+    fn approve_edit_commits_only_that_file() {
+        let (dir, store) = repo();
+        let root = dir.path();
+        fs::write(root.join("other.txt"), "dirty\n").unwrap();
+        fs::write(root.join("staged.txt"), "staged\n").unwrap();
+        git(root, &["add", "staged.txt"]);
+        write_proposal(root, "e", &edit_json("one\n", "ONE\n"));
+
+        let proposal = store.approve("e").unwrap();
+
+        let head = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+        assert_eq!(proposal.review, Review::Approved { commit: Some(head) });
+        assert_eq!(
+            git(root, &["show", "--name-only", "--format=", "HEAD"]).trim(),
+            "src/main.rs"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("src/main.rs")).unwrap(),
+            "ONE\ntwo\ntwo\n"
+        );
+        assert!(git(root, &["log", "-1", "--format=%B"]).contains("- 목적"));
+        assert_eq!(
+            fs::read_to_string(root.join("other.txt")).unwrap(),
+            "dirty\n"
+        );
+        assert!(git(root, &["status", "--porcelain"]).contains("A  staged.txt"));
+    }
+
+    #[test]
+    fn approve_edit_refuses_missing_or_ambiguous_before() {
+        for before in ["nope", "two\n", ""] {
+            let (dir, store) = repo();
+            write_proposal(dir.path(), "e", &edit_json(before, "x"));
+            assert!(
+                matches!(store.approve("e"), Err(ReviewError::Apply(_))),
+                "{before}"
+            );
+            assert_eq!(
+                git(dir.path(), &["rev-list", "--count", "HEAD"]).trim(),
+                "1"
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
+                "one\ntwo\ntwo\n"
+            );
+        }
+    }
+
+    #[test]
+    fn approve_edit_refuses_dirty_file() {
+        let (dir, store) = repo();
+        fs::write(dir.path().join("src/main.rs"), "one\nlocal\n").unwrap();
+        write_proposal(dir.path(), "e", &edit_json("one\n", "ONE\n"));
+        assert!(matches!(store.approve("e"), Err(ReviewError::Apply(_))));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
+            "one\nlocal\n"
+        );
+    }
+
+    #[test]
+    fn failed_commit_restores_the_file() {
+        let (dir, store) = repo();
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        write_proposal(dir.path(), "e", &edit_json("one\n", "ONE\n"));
+        assert!(matches!(store.approve("e"), Err(ReviewError::Apply(_))));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
+            "one\ntwo\ntwo\n"
+        );
+        assert_eq!(
+            store.list().unwrap().proposals[0].proposal.review,
+            Review::Pending
+        );
+    }
+
+    #[test]
+    fn approve_edit_outside_git_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/main.rs"), "one\n").unwrap();
+        write_proposal(dir.path(), "e", &edit_json("one\n", "ONE\n"));
+        let store = Store::new(dir.path());
+        assert!(matches!(store.approve("e"), Err(ReviewError::Apply(_))));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/main.rs")).unwrap(),
+            "one\n"
+        );
+    }
+
+    #[test]
+    fn approved_proposal_cannot_be_reviewed_again() {
+        let (dir, store) = repo();
+        write_proposal(dir.path(), "c", &create_json("", "a.rs"));
+        store.approve("c").unwrap();
+        assert!(matches!(
+            store.approve("c"),
+            Err(ReviewError::AlreadyReviewed(_))
+        ));
+        assert!(matches!(
+            store.reject("c", "r"),
+            Err(ReviewError::AlreadyReviewed(_))
+        ));
+    }
+
+    #[test]
+    fn bundled_examples_are_valid() {
+        for json in [
+            include_str!("../../../examples/proposals/create-greeting.json"),
+            include_str!("../../../examples/proposals/edit-main.json"),
+        ] {
+            serde_json::from_str::<Proposal>(json).unwrap();
+        }
     }
 }

@@ -36,6 +36,11 @@ pub struct EditRegion {
 pub enum Review {
     #[default]
     Pending,
+    Approved {
+        /// 편집안이 만든 커밋. 생성안은 파일 배치만 하므로 없다.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
+    },
     Rejected {
         reason: String,
     },
