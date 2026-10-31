@@ -5,8 +5,8 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 
-use crate::apply::apply;
-use crate::model::{Proposal, Review};
+use crate::apply::{apply_create, apply_edit};
+use crate::model::{Change, EditRegion, Proposal, Review};
 
 const PROPOSALS_DIR: &str = ".syntra/proposals";
 const FALLBACK_PROPOSALS_DIR: &str = "proposals";
@@ -131,28 +131,91 @@ impl Store {
         Ok(listing)
     }
 
-    /// 제안서를 워크스페이스에 적용하고 승인 상태로 기록한다. 적용에 실패하면 대기 상태로 남는다.
+    /// 제안서를 워크스페이스에 적용하고 승인 상태로 기록한다. 편집안은 아직 대기 중인 영역을 모두
+    /// 적용한다. 적용에 실패하면 아무것도 바뀌지 않고 대기 상태로 남는다.
     pub fn approve(&self, id: &str) -> Result<Proposal, ReviewError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut proposal = self.load_pending(id)?;
-        apply(&self.root, &self.dir(), &proposal.change)?;
-        proposal.review = Review::Approved;
+        let dir = self.dir();
+        match &mut proposal.change {
+            Change::Create {
+                file_name,
+                content,
+                location,
+                ..
+            } => {
+                apply_create(&self.root, &dir, location, file_name, content)?;
+                proposal.review = Review::Approved;
+            }
+            Change::Edit { file_name, regions } => {
+                let pending: Vec<(usize, &EditRegion)> = regions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, region)| region.review == Review::Pending)
+                    .collect();
+                apply_edit(&self.root, &dir, file_name, &pending)?;
+                for region in regions.iter_mut() {
+                    if region.review == Review::Pending {
+                        region.review = Review::Approved;
+                    }
+                }
+                proposal.settle();
+            }
+        }
         self.save(id, &proposal)?;
         Ok(proposal)
     }
 
-    /// 제안서를 거부 상태로 기록한다. 제안서 파일 외에는 아무것도 변경하지 않는다.
+    /// 제안서를 거부 상태로 기록한다. 편집안은 아직 대기 중인 영역을 모두 거부한다.
+    /// 제안서 파일 외에는 아무것도 변경하지 않는다.
     pub fn reject(&self, id: &str, reason: &str) -> Result<Proposal, ReviewError> {
-        let reason = reason.trim();
-        if reason.is_empty() {
-            return Err(ReviewError::BlankReason);
-        }
-
+        let reason = valid_reason(reason)?;
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut proposal = self.load_pending(id)?;
-        proposal.review = Review::Rejected {
+        let rejected = Review::Rejected {
             reason: reason.to_string(),
         };
+        match &mut proposal.change {
+            Change::Edit { regions, .. } if !regions.is_empty() => {
+                for region in regions.iter_mut() {
+                    if region.review == Review::Pending {
+                        region.review = rejected.clone();
+                    }
+                }
+                proposal.settle();
+            }
+            _ => proposal.review = rejected,
+        }
+        self.save(id, &proposal)?;
+        Ok(proposal)
+    }
+
+    /// 편집안의 영역 하나만 파일에 적용한다.
+    pub fn approve_region(&self, id: &str, index: usize) -> Result<Proposal, ReviewError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proposal = self.load_pending(id)?;
+        let (file_name, region) = pending_region(&mut proposal, id, index)?;
+        apply_edit(&self.root, &self.dir(), &file_name, &[(index, &*region)])?;
+        region.review = Review::Approved;
+        proposal.settle();
+        self.save(id, &proposal)?;
+        Ok(proposal)
+    }
+
+    /// 편집안의 영역 하나만 거부한다. 제안서 파일 외에는 아무것도 변경하지 않는다.
+    pub fn reject_region(
+        &self,
+        id: &str,
+        index: usize,
+        reason: &str,
+    ) -> Result<Proposal, ReviewError> {
+        let reason = valid_reason(reason)?;
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proposal = self.load_pending(id)?;
+        pending_region(&mut proposal, id, index)?.1.review = Review::Rejected {
+            reason: reason.to_string(),
+        };
+        proposal.settle();
         self.save(id, &proposal)?;
         Ok(proposal)
     }
@@ -185,6 +248,34 @@ impl Store {
         fs::rename(&tmp, dir.join(format!("{id}.json")))?;
         Ok(())
     }
+}
+
+fn valid_reason(reason: &str) -> Result<&str, ReviewError> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err(ReviewError::BlankReason);
+    }
+    Ok(reason)
+}
+
+/// 대기 중인 편집 영역과 그 파일명을 찾는다.
+fn pending_region<'a>(
+    proposal: &'a mut Proposal,
+    id: &str,
+    index: usize,
+) -> Result<(String, &'a mut EditRegion), ReviewError> {
+    let not_found = || ReviewError::NotFound(format!("{id} 영역 {}", index + 1));
+    let Change::Edit { file_name, regions } = &mut proposal.change else {
+        return Err(not_found());
+    };
+    let region = regions.get_mut(index).ok_or_else(not_found)?;
+    if region.review != Review::Pending {
+        return Err(ReviewError::AlreadyReviewed(format!(
+            "{id} 영역 {}",
+            index + 1
+        )));
+    }
+    Ok((file_name.clone(), region))
 }
 
 fn has_json_file(dir: &Path) -> bool {
@@ -568,6 +659,163 @@ mod tests {
         )
         .unwrap();
         assert_eq!(proposal.review, Review::Approved);
+    }
+
+    const TWO_REGIONS: &str = r#"{"kind":"edit","file_name":"src/main.rs","regions":[
+        {"before":"one\n","after":"ONE\n","purpose":"a"},
+        {"before":"three\n","after":"THREE\n","purpose":"b"}]}"#;
+
+    fn two_regions() -> (tempfile::TempDir, Store, PathBuf) {
+        let (dir, store) = repo();
+        let file = dir.path().join("src/main.rs");
+        fs::write(&file, "one\nthree\n").unwrap();
+        write_proposal(dir.path(), "e", TWO_REGIONS);
+        (dir, store, file)
+    }
+
+    fn region_reviews(proposal: &Proposal) -> Vec<Review> {
+        match &proposal.change {
+            Change::Edit { regions, .. } => regions.iter().map(|r| r.review.clone()).collect(),
+            Change::Create { .. } => panic!("편집안이 아닙니다"),
+        }
+    }
+
+    fn rejected(reason: &str) -> Review {
+        Review::Rejected {
+            reason: reason.to_string(),
+        }
+    }
+
+    #[test]
+    fn approving_one_region_applies_only_that_region() {
+        let (_dir, store, file) = two_regions();
+        let proposal = store.approve_region("e", 1).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one\nTHREE\n");
+        assert_eq!(proposal.review, Review::Pending);
+        assert_eq!(
+            region_reviews(&proposal),
+            [Review::Pending, Review::Approved]
+        );
+        assert_eq!(store.list().unwrap().proposals[0].proposal, proposal);
+    }
+
+    #[test]
+    fn rejecting_one_region_changes_no_code() {
+        let (_dir, store, file) = two_regions();
+        let proposal = store.reject_region("e", 0, " 불필요 ").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one\nthree\n");
+        assert_eq!(proposal.review, Review::Pending);
+        assert_eq!(region_reviews(&proposal)[0], rejected("불필요"));
+    }
+
+    #[test]
+    fn region_rejection_requires_a_reason() {
+        let (_dir, store, _file) = two_regions();
+        assert!(matches!(
+            store.reject_region("e", 0, "  "),
+            Err(ReviewError::BlankReason)
+        ));
+        assert_eq!(
+            region_reviews(&store.list().unwrap().proposals[0].proposal)[0],
+            Review::Pending
+        );
+    }
+
+    #[test]
+    fn proposal_result_follows_its_regions() {
+        let (_dir, store, _file) = two_regions();
+        store.approve_region("e", 0).unwrap();
+        let proposal = store.approve_region("e", 1).unwrap();
+        assert_eq!(proposal.review, Review::Approved);
+
+        let (_dir, store, file) = two_regions();
+        store.approve_region("e", 0).unwrap();
+        let proposal = store.reject_region("e", 1, "사유").unwrap();
+        assert_eq!(proposal.review, Review::PartiallyApproved);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "ONE\nthree\n");
+
+        let (_dir, store, _file) = two_regions();
+        store.reject_region("e", 0, "첫째").unwrap();
+        let proposal = store.reject_region("e", 1, "둘째").unwrap();
+        assert_eq!(proposal.review, rejected("영역 1: 첫째\n영역 2: 둘째"));
+    }
+
+    #[test]
+    fn region_cannot_be_reviewed_twice() {
+        let (_dir, store, file) = two_regions();
+        store.approve_region("e", 0).unwrap();
+        assert!(matches!(
+            store.approve_region("e", 0),
+            Err(ReviewError::AlreadyReviewed(_))
+        ));
+        assert!(matches!(
+            store.reject_region("e", 0, "사유"),
+            Err(ReviewError::AlreadyReviewed(_))
+        ));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "ONE\nthree\n");
+    }
+
+    #[test]
+    fn unknown_region_is_not_found() {
+        let (dir, store, _file) = two_regions();
+        assert!(matches!(
+            store.approve_region("e", 2),
+            Err(ReviewError::NotFound(_))
+        ));
+        write_proposal(dir.path(), "c", CREATE);
+        assert!(matches!(
+            store.approve_region("c", 0),
+            Err(ReviewError::NotFound(_))
+        ));
+        assert!(matches!(
+            store.reject_region("c", 0, "사유"),
+            Err(ReviewError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn failed_region_stays_pending() {
+        let (_dir, store, file) = two_regions();
+        fs::write(&file, "changed\nthree\n").unwrap();
+        assert!(matches!(
+            store.approve_region("e", 0),
+            Err(ReviewError::Apply(_))
+        ));
+        assert_eq!(
+            region_reviews(&store.list().unwrap().proposals[0].proposal)[0],
+            Review::Pending
+        );
+    }
+
+    #[test]
+    fn approving_whole_proposal_skips_reviewed_regions() {
+        let (_dir, store, file) = two_regions();
+        store.reject_region("e", 0, "사유").unwrap();
+        let proposal = store.approve("e").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one\nTHREE\n");
+        assert_eq!(proposal.review, Review::PartiallyApproved);
+    }
+
+    #[test]
+    fn rejecting_whole_proposal_keeps_approved_regions() {
+        let (_dir, store, file) = two_regions();
+        store.approve_region("e", 0).unwrap();
+        let proposal = store.reject("e", "사유").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "ONE\nthree\n");
+        assert_eq!(proposal.review, Review::PartiallyApproved);
+        assert_eq!(region_reviews(&proposal)[1], rejected("사유"));
+    }
+
+    #[test]
+    fn whole_approval_is_all_or_nothing() {
+        let (_dir, store, file) = two_regions();
+        fs::write(&file, "one\n").unwrap();
+        assert!(matches!(store.approve("e"), Err(ReviewError::Apply(_))));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one\n");
+        assert_eq!(
+            region_reviews(&store.list().unwrap().proposals[0].proposal),
+            [Review::Pending, Review::Pending]
+        );
     }
 
     #[test]

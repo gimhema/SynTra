@@ -27,7 +27,7 @@ cargo run --release
 }
 ```
 
-검토 결과는 같은 파일의 `review`에 기록됩니다.
+검토 결과는 같은 파일의 `review`에 기록됩니다. 편집안은 영역마다 `review`가 따로 기록되고, 모든 영역을 검토하면 제안서 전체의 `review`가 정해집니다 (`approved`, `partially_approved`, `rejected`).
 
 ```json
 "review": { "status": "approved" }
@@ -41,6 +41,7 @@ cargo run --release
 
 | | 생성안 | 편집안 |
 |---|---|---|
+| 단위 | 제안서 전체 | 영역별 (남은 영역이 2개 이상이면 전체 승인/거부도 가능) |
 | 승인 | `location/file_name`에 파일 생성 | 파일에서 해당 영역을 교체 |
 | 승인이 거부되는 경우 | 같은 파일이 이미 존재 | `before`가 정확히 한 곳에서 발견되지 않음 |
 | 거부 | 사유 필수, 코드 변경 없음 | 사유 필수, 코드 변경 없음 |

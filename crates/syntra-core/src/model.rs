@@ -29,6 +29,8 @@ pub struct EditRegion {
     pub before: String,
     pub after: String,
     pub purpose: String,
+    #[serde(default)]
+    pub review: Review,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +39,53 @@ pub enum Review {
     #[default]
     Pending,
     Approved,
+    /// 편집안의 영역 중 일부만 승인된 상태. 영역별 결과는 각 영역의 `review`에 있다.
+    PartiallyApproved,
     Rejected {
         reason: String,
     },
+}
+
+impl Proposal {
+    /// 편집안의 모든 영역이 검토되었으면 제안서 전체의 결과를 정한다.
+    pub(crate) fn settle(&mut self) {
+        let Change::Edit { regions, .. } = &self.change else {
+            return;
+        };
+        if regions
+            .iter()
+            .any(|region| region.review == Review::Pending)
+        {
+            return;
+        }
+        let reasons: Vec<(usize, &str)> = regions
+            .iter()
+            .enumerate()
+            .filter_map(|(i, region)| match &region.review {
+                Review::Rejected { reason } => Some((i + 1, reason.as_str())),
+                _ => None,
+            })
+            .collect();
+        self.review = if reasons.is_empty() {
+            Review::Approved
+        } else if reasons.len() < regions.len() {
+            Review::PartiallyApproved
+        } else {
+            Review::Rejected {
+                reason: joined_reason(&reasons),
+            }
+        };
+    }
+}
+
+fn joined_reason(reasons: &[(usize, &str)]) -> String {
+    let first = reasons[0].1;
+    if reasons.iter().all(|(_, reason)| *reason == first) {
+        return first.to_string();
+    }
+    reasons
+        .iter()
+        .map(|(number, reason)| format!("영역 {number}: {reason}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

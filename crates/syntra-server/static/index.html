@@ -207,6 +207,13 @@
     }
     .diff { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 
+    /* 영역별 검토 */
+    .region-review { margin: 4px 0 12px; }
+    .region-review .composer-box { box-shadow: none; }
+    .status { margin: 4px 0 12px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .status.approved { color: var(--add-text); }
+    .status.rejected { color: var(--del-text); }
+
     /* 거부 입력창 */
     #composer { padding: 0 24px 20px; }
     .composer-box {
@@ -381,7 +388,7 @@
       for (const proposal of pending) {
         const sub = proposal.kind === 'create'
           ? `생성 · ${proposal.location}`
-          : `편집 · 영역 ${proposal.regions.length}개`;
+          : `편집 · 영역 ${pendingRegions(proposal).length}/${proposal.regions.length}개 대기`;
         list.append(listItem(`p:${proposal.id}`, proposal.file_name, sub));
       }
       if (invalid.length) {
@@ -403,45 +410,71 @@
           column.append(el('h2', '', `영역 ${i + 1}`), el('p', '', region.purpose));
           const diff = el('div', 'diff');
           diff.append(codeBlock('편집 전', region.before, 'del'), codeBlock('편집 후', region.after, 'add'));
-          column.append(diff);
+          column.append(diff, regionReview(proposal, region, i));
         });
       }
       return column;
     }
 
-    function renderComposer(proposal) {
-      const { id } = proposal;
+    function pendingRegions(proposal) {
+      return proposal.regions.filter((region) => region.review.status === 'pending');
+    }
+
+    // 사유 입력창과 거부/승인 버튼. 승인은 사유 없이, 거부는 사유가 있어야 누를 수 있다.
+    function reviewBox(draftKey, labels, url) {
       const box = el('div', 'composer-box');
       const textarea = el('textarea');
       textarea.rows = 1;
       textarea.placeholder = '거부하려면 사유를 입력하세요';
-      textarea.setAttribute('aria-label', '거부 사유');
-      textarea.value = drafts.get(id) ?? '';
-      const rejectButton = el('button', 'btn', '거부');
+      textarea.setAttribute('aria-label', labels.reason);
+      textarea.value = drafts.get(draftKey) ?? '';
+      const rejectButton = el('button', 'btn', labels.reject);
       rejectButton.type = 'button';
       rejectButton.disabled = !textarea.value.trim();
-      const approveButton = el('button', 'btn primary', '승인');
+      const approveButton = el('button', 'btn primary', labels.approve);
       approveButton.type = 'button';
       textarea.addEventListener('input', () => {
-        drafts.set(id, textarea.value);
+        drafts.set(draftKey, textarea.value);
         rejectButton.disabled = !textarea.value.trim();
       });
-      rejectButton.addEventListener('click', async () => {
+      const run = async (action) => {
         rejectButton.disabled = approveButton.disabled = true;
-        await reject(id, textarea.value);
+        await action();
         rejectButton.disabled = !textarea.value.trim();
         approveButton.disabled = false;
-      });
-      approveButton.addEventListener('click', async () => {
-        rejectButton.disabled = approveButton.disabled = true;
-        await approve(id);
-        rejectButton.disabled = !textarea.value.trim();
-        approveButton.disabled = false;
-      });
+      };
+      rejectButton.addEventListener('click', () => run(() => reject(url, textarea.value, draftKey)));
+      approveButton.addEventListener('click', () => run(() => approve(url, draftKey)));
       box.append(textarea, rejectButton, approveButton);
-      const hint = proposal.kind === 'create'
+      return box;
+    }
+
+    function regionReview(proposal, region, index) {
+      const { status, reason } = region.review;
+      if (status === 'approved') return el('p', 'status approved', '승인됨 · 파일에 적용되었습니다');
+      if (status === 'rejected') return el('p', 'status rejected', `거부됨 · ${reason}`);
+      const number = index + 1;
+      const wrapper = el('div', 'region-review');
+      wrapper.append(reviewBox(
+        `${proposal.id}#${index}`,
+        { reason: `영역 ${number} 거부 사유`, reject: '거부', approve: '승인' },
+        `/api/proposals/${encodeURIComponent(proposal.id)}/regions/${index}`,
+      ));
+      return wrapper;
+    }
+
+    function renderComposer(proposal) {
+      const isCreate = proposal.kind === 'create';
+      const box = reviewBox(
+        proposal.id,
+        isCreate
+          ? { reason: '거부 사유', reject: '거부', approve: '승인' }
+          : { reason: '남은 영역 전체의 거부 사유', reject: '전체 거부', approve: '전체 승인' },
+        `/api/proposals/${encodeURIComponent(proposal.id)}`,
+      );
+      const hint = isCreate
         ? '승인하면 파일이 배치 위치에 생성됩니다.'
-        : '승인하면 편집이 파일에 바로 적용됩니다.';
+        : `남은 영역 ${pendingRegions(proposal).length}개에 한 번에 적용합니다. 하나라도 적용할 수 없으면 아무것도 바뀌지 않습니다.`;
       const column = el('div', 'column');
       column.append(box, el('div', 'composer-hint', hint));
       composer.replaceChildren(column);
@@ -449,12 +482,11 @@
 
     function renderDetail() {
       composer.replaceChildren();
-      detail.scrollTop = 0;
       const proposal = pending.find((p) => `p:${p.id}` === selected);
       const broken = invalid.find((item) => `i:${item.file}` === selected);
       if (proposal) {
         detail.replaceChildren(renderProposal(proposal));
-        renderComposer(proposal);
+        if (proposal.kind === 'create' || pendingRegions(proposal).length > 1) renderComposer(proposal);
       } else if (broken) {
         const column = el('div', 'column');
         column.append(el('div', 'kind', '읽을 수 없는 파일'), el('h1', '', broken.file));
@@ -478,6 +510,7 @@
       selected = key;
       history.replaceState(null, '', `#${encodeURIComponent(key)}`);
       render();
+      detail.scrollTop = 0;
     }
 
     async function load() {
@@ -485,15 +518,17 @@
       pending = body.proposals.filter((p) => p.review.status === 'pending');
       invalid = body.invalid;
       source = body.source;
+      const previous = selected;
       const keys = [...pending.map((p) => `p:${p.id}`), ...invalid.map((item) => `i:${item.file}`)];
       if (!keys.includes(selected)) selected = keys[0] ?? null;
       render();
+      if (selected !== previous) detail.scrollTop = 0;
     }
 
-    async function approve(id) {
+    async function approve(url, draftKey) {
       try {
-        await api(`/api/proposals/${encodeURIComponent(id)}/approve`, { method: 'POST' });
-        drafts.delete(id);
+        await api(`${url}/approve`, { method: 'POST' });
+        drafts.delete(draftKey);
         await load();
         showToast('승인했습니다. 파일에 적용되었습니다.');
       } catch (error) {
@@ -501,10 +536,10 @@
       }
     }
 
-    async function reject(id, reason) {
+    async function reject(url, reason, draftKey) {
       try {
-        await postJson(`/api/proposals/${encodeURIComponent(id)}/reject`, { reason });
-        drafts.delete(id);
+        await postJson(`${url}/reject`, { reason });
+        drafts.delete(draftKey);
         await load();
         showToast('거부했습니다. 사유가 제안서에 기록되었습니다.');
       } catch (error) {

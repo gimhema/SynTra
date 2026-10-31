@@ -181,6 +181,25 @@ async fn reject_proposal(
     Ok(Json(current_store(&state)?.reject(&id, &request.reason)?))
 }
 
+async fn approve_region(
+    State(state): State<SharedState>,
+    Path((id, index)): Path<(String, usize)>,
+) -> Result<Json<Proposal>, ApiError> {
+    Ok(Json(current_store(&state)?.approve_region(&id, index)?))
+}
+
+async fn reject_region(
+    State(state): State<SharedState>,
+    Path((id, index)): Path<(String, usize)>,
+    Json(request): Json<RejectRequest>,
+) -> Result<Json<Proposal>, ApiError> {
+    Ok(Json(current_store(&state)?.reject_region(
+        &id,
+        index,
+        &request.reason,
+    )?))
+}
+
 /// 브라우저에서 열린 다른 사이트가 이 서버로 승인 요청을 보내지 못하게 막는다.
 fn is_local_request(headers: &HeaderMap) -> bool {
     let header_str = |name| headers.get(name).and_then(|value| value.to_str().ok());
@@ -223,6 +242,14 @@ fn app(state: SharedState) -> Router {
         .route("/api/proposals", get(list_proposals))
         .route("/api/proposals/{id}/approve", post(approve_proposal))
         .route("/api/proposals/{id}/reject", post(reject_proposal))
+        .route(
+            "/api/proposals/{id}/regions/{index}/approve",
+            post(approve_region),
+        )
+        .route(
+            "/api/proposals/{id}/regions/{index}/reject",
+            post(reject_region),
+        )
         .layer(middleware::from_fn(local_only))
         .with_state(state)
 }
@@ -401,6 +428,51 @@ mod tests {
             StatusCode::OK
         );
         assert!(dir.path().join("plain/a.rs").exists());
+    }
+
+    #[tokio::test]
+    async fn region_routes_review_one_region() {
+        let (dir, app) = test_app();
+        let work = dir.path().join("work");
+        std::fs::write(work.join("c.rs"), "one\ntwo\n").unwrap();
+        std::fs::write(
+            work.join(".syntra/proposals/edit.json"),
+            r#"{"kind":"edit","file_name":"c.rs","regions":[
+                {"before":"one","after":"ONE","purpose":"a"},
+                {"before":"two","after":"TWO","purpose":"b"}]}"#,
+        )
+        .unwrap();
+        open(&app, &dir).await;
+
+        let base = "/api/proposals/edit/regions";
+        assert_eq!(
+            post_json(&app, &format!("{base}/1/approve"), "").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join("c.rs")).unwrap(),
+            "one\nTWO\n"
+        );
+        assert_eq!(
+            post_json(&app, &format!("{base}/1/approve"), "").await,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post_json(&app, &format!("{base}/5/approve"), "").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            post_json(&app, &format!("{base}/0/reject"), r#"{"reason":" "}"#).await,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            post_json(&app, &format!("{base}/0/reject"), r#"{"reason":"사유"}"#).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join("c.rs")).unwrap(),
+            "one\nTWO\n"
+        );
     }
 
     #[tokio::test]

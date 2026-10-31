@@ -3,26 +3,31 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-use crate::model::{Change, EditRegion};
+use crate::model::EditRegion;
 use crate::store::ReviewError;
 
-/// 승인된 변경을 워크스페이스의 파일에 적용한다.
-pub(crate) fn apply(root: &Path, proposals: &Path, change: &Change) -> Result<(), ReviewError> {
-    match change {
-        Change::Create {
-            file_name,
-            content,
-            location,
-            ..
-        } => {
-            let relative = Path::new(location).join(file_name);
-            create(&relative, &safe_path(root, proposals, &relative)?, content)
-        }
-        Change::Edit { file_name, regions } => {
-            let relative = Path::new(file_name);
-            edit(relative, &safe_path(root, proposals, relative)?, regions)
-        }
-    }
+/// 승인된 생성안을 워크스페이스에 배치한다.
+pub(crate) fn apply_create(
+    root: &Path,
+    proposals: &Path,
+    location: &str,
+    file_name: &str,
+    content: &str,
+) -> Result<(), ReviewError> {
+    let relative = Path::new(location).join(file_name);
+    create(&relative, &safe_path(root, proposals, &relative)?, content)
+}
+
+/// 승인된 편집 영역들을 파일에 적용한다. 하나라도 실패하면 파일을 바꾸지 않는다.
+/// 영역은 (제안서 내 번호, 영역) 쌍으로 받아 오류에 원래 번호를 표시한다.
+pub(crate) fn apply_edit(
+    root: &Path,
+    proposals: &Path,
+    file_name: &str,
+    regions: &[(usize, &EditRegion)],
+) -> Result<(), ReviewError> {
+    let relative = Path::new(file_name);
+    edit(relative, &safe_path(root, proposals, relative)?, regions)
 }
 
 fn create(relative: &Path, target: &Path, content: &str) -> Result<(), ReviewError> {
@@ -43,7 +48,11 @@ fn create(relative: &Path, target: &Path, content: &str) -> Result<(), ReviewErr
     Ok(())
 }
 
-fn edit(relative: &Path, target: &Path, regions: &[EditRegion]) -> Result<(), ReviewError> {
+fn edit(
+    relative: &Path,
+    target: &Path,
+    regions: &[(usize, &EditRegion)],
+) -> Result<(), ReviewError> {
     let original = fs::read_to_string(target).map_err(|e| {
         ReviewError::Apply(format!(
             "파일을 읽을 수 없습니다 ({}): {e}",
@@ -55,10 +64,13 @@ fn edit(relative: &Path, target: &Path, regions: &[EditRegion]) -> Result<(), Re
 }
 
 /// 영역마다 편집 전 코드가 정확히 한 곳에서 발견될 때만 교체한다.
-fn replace_regions(original: &str, regions: &[EditRegion]) -> Result<String, ReviewError> {
+fn replace_regions(
+    original: &str,
+    regions: &[(usize, &EditRegion)],
+) -> Result<String, ReviewError> {
     let mut text = original.to_string();
-    for (i, region) in regions.iter().enumerate() {
-        let number = i + 1;
+    for (index, region) in regions {
+        let number = index + 1;
         if region.before.is_empty() {
             return Err(ReviewError::Apply(format!(
                 "영역 {number}: 편집 전 코드가 비어 있습니다"
