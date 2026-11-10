@@ -22,6 +22,20 @@
       --add-bg: #eaf5ec;
       --add-text: #24713c;
       --code-bg: #f4f2ee;
+      --line-del: #fde4df;
+      --line-add: #dcf1e0;
+      --line-mod-del: #fbeee0;
+      --line-mod-add: #e6f2dc;
+      --line-pad: repeating-linear-gradient(135deg, transparent 0 6px, rgb(0 0 0 / 4%) 6px 12px);
+      --gutter: #9a958b;
+      --tok-keyword: #a23a8a;
+      --tok-type: #1f6f8b;
+      --tok-fn: #7a4f00;
+      --tok-macro: #8a5a2b;
+      --tok-comment: #6e8a5e;
+      --tok-string: #b9502f;
+      --tok-number: #3657b3;
+      --tok-pre: #7656a8;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -40,6 +54,20 @@
         --add-bg: #1f3325;
         --add-text: #8fd3a2;
         --code-bg: #262522;
+        --line-del: #4a2924;
+        --line-add: #22402b;
+        --line-mod-del: #45331f;
+        --line-mod-add: #2c3d22;
+        --line-pad: repeating-linear-gradient(135deg, transparent 0 6px, rgb(255 255 255 / 4%) 6px 12px);
+        --gutter: #77736b;
+        --tok-keyword: #e08ad0;
+        --tok-type: #6fc2dc;
+        --tok-fn: #e8c46a;
+        --tok-macro: #d9a66b;
+        --tok-comment: #8aa77a;
+        --tok-string: #f0a07f;
+        --tok-number: #9fb4ff;
+        --tok-pre: #b9a0e8;
       }
     }
 
@@ -166,6 +194,8 @@
     .item-name { font-size: 14px; }
     .item-sub { font-size: 12px; color: var(--muted); }
     .empty-list { padding: 4px 10px; font-size: 13px; color: var(--muted); }
+    .item.back .item-name { font-size: 13px; color: var(--muted); }
+    .item.task-head .item-name { font-size: 15px; font-weight: 600; }
 
     /* 상세 화면 */
     main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -205,7 +235,106 @@
       overflow-x: auto;
       font: 13px/1.55 ui-monospace, "Cascadia Code", Consolas, "D2Coding", monospace;
     }
-    .diff { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    /* 편집안은 좌우 비교를 위해 넓게 쓴다. */
+    .column.wide { max-width: 1680px; }
+
+    /* 좌우 비교 ( 왼쪽 편집 전, 오른쪽 편집 후 ). 줄마다 높이가 같아서 양쪽 줄이 맞는다. */
+    .split {
+      margin-bottom: 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--code-bg);
+    }
+    .split-head, .split-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .split-head > div {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 12px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .split-head .old { background: var(--del-bg); color: var(--del-text); }
+    .split-head .new { background: var(--add-bg); color: var(--add-text); border-left: 1px solid var(--border); }
+    .pane { overflow-x: auto; padding: 6px 0; }
+    .pane + .pane { border-left: 1px solid var(--border); }
+    .lines { display: table; min-width: 100%; }
+    .row { display: table-row; }
+    .row > span { display: table-cell; white-space: pre; }
+    .ln {
+      width: 1%;
+      padding: 0 10px 0 12px;
+      text-align: right;
+      color: var(--gutter);
+      user-select: none;
+    }
+    .src { padding-right: 16px; }
+    .lines, .single pre {
+      font: 13px/20px ui-monospace, "Cascadia Code", Consolas, "D2Coding", monospace;
+      tab-size: 4;
+    }
+    .row.del { background: var(--line-del); }
+    .row.add { background: var(--line-add); }
+    .row.mod-del { background: var(--line-mod-del); }
+    .row.mod-add { background: var(--line-mod-add); }
+    .row.pad { background: var(--line-pad); }
+    .row.del .ln::after, .row.mod-del .ln::after { content: " -"; }
+    .row.add .ln::after, .row.mod-add .ln::after { content: " +"; }
+    .single { padding: 6px 0; overflow-x: auto; }
+    .diff-stat { font-weight: 600; }
+
+    /* 구문 색 ( 함수, 타입, 키워드 정도만 구분한다 ) */
+    .t-keyword { color: var(--tok-keyword); }
+    .t-type { color: var(--tok-type); }
+    .t-fn { color: var(--tok-fn); font-weight: 600; }
+    .t-macro { color: var(--tok-macro); }
+    .t-comment { color: var(--tok-comment); font-style: italic; }
+    .t-string { color: var(--tok-string); }
+    .t-number { color: var(--tok-number); }
+    .t-pre { color: var(--tok-pre); }
+
+    /* 제목 줄 ( 제목, 표시, 오른쪽 버튼 ) */
+    .h2-row { display: flex; align-items: center; gap: 8px; margin: 28px 0 8px; }
+    .h2-row h2 { margin: 0; }
+    .h2-row .btn { margin-left: auto; padding: 2px 10px; font-size: 12px; border-radius: 8px; }
+    .badge {
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: var(--selected);
+      color: var(--muted);
+    }
+
+    /* 직접 편집 */
+    textarea.code-editor {
+      display: block;
+      flex: none;
+      width: 100%;
+      min-height: 120px;
+      max-height: none;
+      padding: 6px 12px;
+      font: 13px/20px ui-monospace, "Cascadia Code", Consolas, "D2Coding", monospace;
+      tab-size: 4;
+      white-space: pre;
+      overflow: auto;
+      resize: vertical;
+      background: var(--surface);
+    }
+    textarea.code-editor:focus { box-shadow: inset 0 0 0 2px var(--accent); }
+    .split-body .code-editor { border-left: 1px solid var(--border); }
+    .editor-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .editor-bar .hint { margin-right: auto; }
+
+    /* 작업 요약 */
+    .overview .item { display: flex; justify-content: space-between; gap: 12px; }
+    .overview .item-sub { flex: none; }
 
     /* 영역별 검토 */
     .region-review { margin: 4px 0 12px; }
@@ -261,7 +390,9 @@
       .brand { padding: 12px 16px 0; }
       #detail { padding: 20px 16px 16px; }
       #composer { padding: 0 16px 12px; }
-      .diff { grid-template-columns: minmax(0, 1fr); gap: 0; }
+      .split-head, .split-body { grid-template-columns: minmax(0, 1fr); }
+      .pane + .pane, .split-head .new { border-left: 0; border-top: 1px solid var(--border); }
+      .split-body .code-editor { border-left: 0; border-top: 1px solid var(--border); }
     }
   </style>
 </head>
@@ -291,7 +422,7 @@
     <aside>
       <div class="brand">SynTra</div>
       <button id="workspace" class="workspace" type="button"></button>
-      <nav id="list" aria-label="승인 대기 목록"></nav>
+      <nav id="list" aria-label="작업과 승인 대기 목록"></nav>
     </aside>
     <main>
       <div id="detail"></div>
@@ -312,12 +443,19 @@
     const composer = document.getElementById('composer');
     const toast = document.getElementById('toast');
 
-    let pending = [];
+    let proposals = [];
     let invalid = [];
     let source = '';
+    // 고른 작업. null 이면 작업 목록을 보여준다.
+    let task = null;
+    // 고른 항목. 'p:<id>' 제안서, 'i:<file>' 읽을 수 없는 파일, null 은 작업 요약.
     let selected = null;
     const drafts = new Map();
+    // 직접 편집 중인 내용. 키는 생성안 '<id>', 편집 영역 '<id>#<index>' ( 사유 입력창과 같은 규칙 )
+    const editing = new Map();
     let toastTimer;
+
+    const REVIEW_LABEL = { pending: '대기', approved: '승인됨', partially_approved: '일부 승인', rejected: '거부됨' };
 
     // 제안서 내용은 에이전트가 작성한 것이므로 textContent로만 출력한다.
     function el(tag, className, text) {
@@ -327,13 +465,240 @@
       return node;
     }
 
-    function codeBlock(label, code, variant = '') {
-      const block = el('div', `code ${variant}`);
+    // ---------------------------------------------------------------
+    // 구문 색. 파일 확장자로 언어를 고르고, 토큰마다 span 을 textContent 로 만든다.
+    // ---------------------------------------------------------------
+    const C_KEYWORDS = new Set(('if else for while do switch case default break continue return goto sizeof new delete '
+      + 'this true false nullptr NULL TRUE FALSE class struct union enum namespace public private protected virtual '
+      + 'override static const extern inline typedef template typename using friend operator try catch throw '
+      + 'volatile mutable explicit register auto').split(' '));
+    const C_TYPES = new Set(('void bool char short int long float double signed unsigned wchar_t size_t '
+      + 'SI08 SI16 SI32 SI64 UI08 UI16 UI32 UI64 BOOL DWORD WORD BYTE HDC TCHAR LPCSTR LPSTR std').split(' '));
+    const SQL_KEYWORDS = new Set(('select from where and or not null is in exists insert into values update set delete '
+      + 'create alter drop table procedure proc function view index primary key clustered nonclustered constraint '
+      + 'default as begin end if else return declare top order by group having asc desc on with nolock join left '
+      + 'inner outer union all case when then go nocount xact_abort object_id tran transaction commit rollback '
+      + 'int bigint smallint tinyint varchar nvarchar char datetime bit row_number over').split(' '));
+
+    function languageOf(fileName) {
+      const ext = (fileName.split('.').pop() || '').toLowerCase();
+      if (['c', 'cc', 'cpp', 'cxx', 'h', 'hh', 'hpp', 'inl', 'cs', 'rs', 'js', 'ts', 'java'].includes(ext)) return 'c';
+      if (ext === 'sql') return 'sql';
+      if (ext === 'ini') return 'ini';
+      return 'plain';
+    }
+
+    function classifyIdent(word, next) {
+      if (C_KEYWORDS.has(word)) return 'keyword';
+      if (next === '(') return 'fn';
+      if (C_TYPES.has(word) || /^(clt|sDB|s|C|F|E)[A-Z]\w*$/.test(word)) return 'type';
+      if (/^_?[A-Z][A-Z0-9_]{2,}$/.test(word)) return 'macro';
+      return '';
+    }
+
+    // 텍스트 전체를 토큰 배열 [{ c: 종류, t: 글자 }] 로 나눈다. ( 여러 줄 주석을 위해 줄 단위가 아니라 전체를 본다 )
+    function tokenize(text, lang) {
+      const tokens = [];
+      const push = (c, t) => { if (t) tokens.push({ c, t }); };
+      if (lang === 'plain') { push('', text); return tokens; }
+      if (lang === 'ini') {
+        for (const line of text.split(/(\n)/)) {
+          if (line === '\n') push('', line);
+          else if (/^\s*[;#]/.test(line)) push('comment', line);
+          else if (/^\s*\[.*\]\s*$/.test(line)) push('type', line);
+          else {
+            const at = line.search(/[=:]/);
+            if (at > 0) { push('fn', line.slice(0, at)); push('', line.slice(at)); } else push('', line);
+          }
+        }
+        return tokens;
+      }
+      const rules = lang === 'sql'
+        ? [['comment', /--[^\n]*/y], ['comment', /\/\*[\s\S]*?(?:\*\/|$)/y], ['string', /N?'(?:''|[^'])*'?/y],
+           ['number', /\d+(?:\.\d+)?/y], ['macro', /@@?\w+/y], ['ident', /[A-Za-z_][\w$#]*/y]]
+        : [['comment', /\/\/[^\n]*/y], ['comment', /\/\*[\s\S]*?(?:\*\/|$)/y], ['pre', /^[ \t]*#[^\n]*/my],
+           ['string', /"(?:\\.|[^"\\\n])*"?/y], ['string', /'(?:\\.|[^'\\\n])*'?/y],
+           ['number', /\b(?:0x[0-9a-fA-F]+|\d[\w.]*)/y], ['ident', /[A-Za-z_]\w*/y]];
+      let i = 0;
+      while (i < text.length) {
+        let matched = false;
+        for (const [kind, re] of rules) {
+          re.lastIndex = i;
+          const m = re.exec(text);
+          if (!m || !m[0]) continue;
+          if (kind === 'pre' && i > 0 && text[i - 1] !== '\n' && !/^[ \t]/.test(text[i - 1])) continue;
+          let cls = kind;
+          if (kind === 'ident') {
+            const rest = text.slice(i + m[0].length).match(/^\s*(.)/);
+            cls = lang === 'sql'
+              ? (SQL_KEYWORDS.has(m[0].toLowerCase()) ? 'keyword' : (rest && rest[1] === '(' ? 'fn' : ''))
+              : classifyIdent(m[0], rest ? rest[1] : '');
+          }
+          push(cls, m[0]);
+          i += m[0].length;
+          matched = true;
+          break;
+        }
+        if (!matched) {
+          // 규칙에 안 맞는 글자는 다음 규칙 시작 후보 전까지 묶어서 넣는다.
+          let j = i + 1;
+          while (j < text.length && !/[A-Za-z_0-9"'\/#@\-\n]/.test(text[j])) j++;
+          push('', text.slice(i, j));
+          i = j;
+        }
+      }
+      return tokens;
+    }
+
+    // 토큰을 줄 단위로 나눈다. 반환 : [[{c, t}, ...], ...]
+    function highlightLines(text, lang) {
+      const lines = [[]];
+      for (const token of tokenize(text, lang)) {
+        const parts = token.t.split('\n');
+        parts.forEach((part, index) => {
+          if (index > 0) lines.push([]);
+          if (part) lines[lines.length - 1].push({ c: token.c, t: part });
+        });
+      }
+      return lines;
+    }
+
+    function normalizeCode(code) {
+      const text = code.replace(/\r\n?/g, '\n');
+      return text.endsWith('\n') ? text.slice(0, -1) : text;
+    }
+
+    function lineNode(tokens) {
+      const node = el('span', 'src');
+      for (const token of tokens) node.append(token.c ? el('span', `t-${token.c}`, token.t) : document.createTextNode(token.t));
+      if (!tokens.length) node.textContent = ' ';
+      return node;
+    }
+
+    function row(className, number, tokens) {
+      const line = el('div', `row ${className}`);
+      line.append(el('span', 'ln', number ? String(number) : ''), tokens ? lineNode(tokens) : el('span', 'src', ' '));
+      return line;
+    }
+
+    // 생성안처럼 한쪽만 있는 코드
+    function codeBlock(label, code, fileName) {
+      const block = el('div', 'code');
       block.append(el('div', 'code-label', label));
-      const pre = el('pre');
-      pre.append(el('code', '', code));
-      block.append(pre);
+      const body = el('div', 'single');
+      const lines = el('div', 'lines');
+      highlightLines(normalizeCode(code), languageOf(fileName)).forEach((tokens, i) => lines.append(row('', i + 1, tokens)));
+      body.append(lines);
+      block.append(body);
       return block;
+    }
+
+    // ---------------------------------------------------------------
+    // 좌우 비교. 줄 단위 최장 공통 부분( LCS )으로 같은 줄을 맞추고,
+    // 바뀐 구간은 왼쪽( 삭제 )과 오른쪽( 추가 )을 나란히 놓는다. 짝이 없는 쪽은 빈 줄로 채운다.
+    // ---------------------------------------------------------------
+    // 같은 줄이 여러 번 나오면 맞추는 방법이 여럿이다. ( 예 : 원래 줄을 새 블록 안에 한 번 더 쓴 경우 )
+    // 앞에서부터 맞춘 결과와 뒤에서부터 맞춘 결과 중 바뀐 구간이 적은 쪽을 쓴다. ( git 도구들과 같은 기준 )
+    function diffLines(a, b) {
+      // 너무 크면 비교하지 않고 전체를 바뀐 구간으로 본다.
+      if (a.length * b.length > 4000000) return [{ type: 'change', a: a.map((_, i) => i), b: b.map((_, i) => i) }];
+
+      const forward = diffLinesOnce(a, b);
+      const reversed = diffLinesOnce([...a].reverse(), [...b].reverse()).reverse().map((block) => (
+        block.type === 'same'
+          ? { type: 'same', a: a.length - 1 - block.a, b: b.length - 1 - block.b }
+          : { type: 'change', a: block.a.map((i) => a.length - 1 - i).reverse(), b: block.b.map((j) => b.length - 1 - j).reverse() }
+      ));
+      const changes = (blocks) => blocks.filter((block) => block.type === 'change').length;
+      return changes(reversed) < changes(forward) ? reversed : forward;
+    }
+
+    function diffLinesOnce(a, b) {
+      const n = a.length;
+      const m = b.length;
+      const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+        }
+      }
+      const blocks = [];
+      let change = null;
+      const flush = () => { if (change) { blocks.push(change); change = null; } };
+      let i = 0;
+      let j = 0;
+      while (i < n || j < m) {
+        if (i < n && j < m && a[i] === b[j]) {
+          flush();
+          blocks.push({ type: 'same', a: i, b: j });
+          i++;
+          j++;
+        } else {
+          change = change || { type: 'change', a: [], b: [] };
+          if (j < m && (i >= n || lcs[i][j + 1] >= lcs[i + 1][j])) change.b.push(j++);
+          else change.a.push(i++);
+        }
+      }
+      flush();
+      return blocks;
+    }
+
+    function splitDiff(before, after, fileName) {
+      const lang = languageOf(fileName);
+      const oldText = normalizeCode(before);
+      const newText = normalizeCode(after);
+      const oldLines = oldText.split('\n');
+      const newLines = newText.split('\n');
+      const oldTokens = highlightLines(oldText, lang);
+      const newTokens = highlightLines(newText, lang);
+
+      const left = el('div', 'lines');
+      const right = el('div', 'lines');
+      let added = 0;
+      let removed = 0;
+      for (const block of diffLines(oldLines, newLines)) {
+        if (block.type === 'same') {
+          left.append(row('', block.a + 1, oldTokens[block.a]));
+          right.append(row('', block.b + 1, newTokens[block.b]));
+          continue;
+        }
+        removed += block.a.length;
+        added += block.b.length;
+        const both = block.a.length > 0 && block.b.length > 0;
+        const height = Math.max(block.a.length, block.b.length);
+        for (let k = 0; k < height; k++) {
+          const ai = block.a[k];
+          const bi = block.b[k];
+          left.append(ai === undefined ? row('pad') : row(both ? 'mod-del' : 'del', ai + 1, oldTokens[ai]));
+          right.append(bi === undefined ? row('pad') : row(both ? 'mod-add' : 'add', bi + 1, newTokens[bi]));
+        }
+      }
+
+      const split = el('div', 'split');
+      const head = el('div', 'split-head');
+      const oldHead = el('div', 'old');
+      oldHead.append(el('span', '', '편집 전'), el('span', 'diff-stat', `-${removed}`));
+      const newHead = el('div', 'new');
+      newHead.append(el('span', '', '편집 후'), el('span', 'diff-stat', `+${added}`));
+      head.append(oldHead, newHead);
+      const body = el('div', 'split-body');
+      const leftPane = el('div', 'pane');
+      const rightPane = el('div', 'pane');
+      leftPane.append(left);
+      rightPane.append(right);
+      // 가로 스크롤은 양쪽을 같이 움직인다.
+      let syncing = false;
+      const sync = (from, to) => from.addEventListener('scroll', () => {
+        if (syncing) return;
+        syncing = true;
+        to.scrollLeft = from.scrollLeft;
+        syncing = false;
+      });
+      sync(leftPane, rightPane);
+      sync(rightPane, leftPane);
+      body.append(leftPane, rightPane);
+      split.append(head, body);
+      return split;
     }
 
     function showToast(text, duration = 4000) {
@@ -382,14 +747,55 @@
       return header;
     }
 
-    function renderList() {
-      list.replaceChildren(sectionTitle('승인 대기', pending.length));
-      if (!pending.length) list.append(el('div', 'empty-list', '대기 중인 항목이 없습니다'));
-      for (const proposal of pending) {
-        const sub = proposal.kind === 'create'
-          ? `생성 · ${proposal.location}`
-          : `편집 · 영역 ${pendingRegions(proposal).length}/${proposal.regions.length}개 대기`;
-        list.append(listItem(`p:${proposal.id}`, proposal.file_name, sub));
+    function isPending(proposal) {
+      return proposal.review.status === 'pending';
+    }
+
+    // 작업 이름 규칙 '<날짜>_<시각>_<작업명>' 이면 작업명과 시각을 나눠 보여준다.
+    function taskLabel(name) {
+      const m = /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})_(.+)$/.exec(name);
+      return m ? { title: m[6], when: `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` } : { title: name, when: '' };
+    }
+
+    // 작업별로 묶는다. 최근 작업( 이름이 큰 쪽 )이 위로 온다.
+    function taskGroups() {
+      const groups = new Map();
+      for (const proposal of proposals) {
+        if (!groups.has(proposal.task)) groups.set(proposal.task, { name: proposal.task, items: [], pending: 0 });
+        const group = groups.get(proposal.task);
+        group.items.push(proposal);
+        if (isPending(proposal)) group.pending++;
+      }
+      return [...groups.values()].sort((a, b) => b.name.localeCompare(a.name));
+    }
+
+    function proposalSub(proposal) {
+      const edited = proposal.edited || (proposal.regions ?? []).some((region) => region.edited) ? ' · 직접 수정' : '';
+      if (!isPending(proposal)) return `${REVIEW_LABEL[proposal.review.status]} · ${proposal.kind === 'create' ? '생성' : '편집'}${edited}`;
+      const sub = proposal.kind === 'create'
+        ? `생성 · ${proposal.location}`
+        : `편집 · 영역 ${pendingRegions(proposal).length}/${proposal.regions.length}개 대기`;
+      return sub + edited;
+    }
+
+    function taskItem(group) {
+      const label = taskLabel(group.name);
+      const counts = group.pending ? `대기 ${group.pending} / 전체 ${group.items.length}` : `${group.items.length}건 처리됨`;
+      const item = button('item', label.title, label.when ? `${counts} · ${label.when}` : counts, () => openTask(group.name));
+      item.title = group.name;
+      return item;
+    }
+
+    function renderTaskList() {
+      const groups = taskGroups();
+      const active = groups.filter((group) => group.pending > 0);
+      const finished = groups.filter((group) => group.pending === 0);
+      list.replaceChildren(sectionTitle('진행 중인 작업', active.length));
+      if (!active.length) list.append(el('div', 'empty-list', '승인 대기 중인 작업이 없습니다'));
+      for (const group of active) list.append(taskItem(group));
+      if (finished.length) {
+        list.append(sectionTitle('완료된 작업', finished.length));
+        for (const group of finished) list.append(taskItem(group));
       }
       if (invalid.length) {
         list.append(sectionTitle('읽을 수 없는 파일', invalid.length));
@@ -397,22 +803,177 @@
       }
     }
 
+    function renderList() {
+      if (task === null) {
+        renderTaskList();
+        return;
+      }
+      const items = proposals.filter((proposal) => proposal.task === task);
+      const waiting = items.filter(isPending);
+      const done = items.filter((proposal) => !isPending(proposal));
+      const label = taskLabel(task);
+      const back = button('item back', '← 작업 목록', '', () => openTask(null));
+      const head = listItem(null, label.title, label.when || '작업 요약');
+      head.classList.add('task-head');
+      head.title = task;
+      list.replaceChildren(back, head, sectionTitle('승인 대기', waiting.length));
+      if (!waiting.length) list.append(el('div', 'empty-list', '대기 중인 항목이 없습니다'));
+      for (const proposal of waiting) list.append(listItem(`p:${proposal.id}`, proposal.file_name, proposalSub(proposal)));
+      if (done.length) {
+        list.append(sectionTitle('처리됨', done.length));
+        for (const proposal of done) list.append(listItem(`p:${proposal.id}`, proposal.file_name, proposalSub(proposal)));
+      }
+    }
+
+    // 제목 줄. 직접 수정 표시와 오른쪽 버튼을 붙일 수 있다.
+    function headingRow(title, badge, action) {
+      const head = el('div', 'h2-row');
+      head.append(el('h2', '', title));
+      if (badge) head.append(el('span', 'badge', badge));
+      if (action) {
+        const actionButton = el('button', 'btn', action.label);
+        actionButton.type = 'button';
+        actionButton.addEventListener('click', action.run);
+        head.append(actionButton);
+      }
+      return head;
+    }
+
+    function editAction(key, text) {
+      if (editing.has(key)) return null;
+      return {
+        label: '직접 편집',
+        run: () => {
+          editing.set(key, text.replace(/\r\n/g, '\n'));
+          renderDetail();
+          detail.querySelector(`textarea[data-edit-key="${CSS.escape(key)}"]`)?.focus();
+        },
+      };
+    }
+
+    // 코드 입력란. Tab 은 들여쓰기, Esc 다음 Tab 은 입력란 밖으로 이동, Ctrl+S 는 저장.
+    function codeEditor(key, label, onSave) {
+      const area = el('textarea', 'code-editor');
+      area.value = editing.get(key);
+      area.wrap = 'off';
+      area.spellcheck = false;
+      area.dataset.editKey = key;
+      area.setAttribute('aria-label', label);
+      let escaped = false;
+      area.addEventListener('input', () => editing.set(key, area.value));
+      area.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          escaped = true;
+          return;
+        }
+        if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.altKey && !escaped) {
+          event.preventDefault();
+          area.setRangeText('\t', area.selectionStart, area.selectionEnd, 'end');
+          editing.set(key, area.value);
+        } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+          event.preventDefault();
+          onSave();
+        }
+        escaped = false;
+      });
+      return area;
+    }
+
+    function editorBar(key, onSave) {
+      const bar = el('div', 'editor-bar');
+      const cancelButton = el('button', 'btn', '취소');
+      cancelButton.type = 'button';
+      cancelButton.addEventListener('click', () => {
+        editing.delete(key);
+        renderDetail();
+      });
+      const saveButton = el('button', 'btn primary', '저장');
+      saveButton.type = 'button';
+      saveButton.addEventListener('click', async () => {
+        saveButton.disabled = cancelButton.disabled = true;
+        await onSave();
+        saveButton.disabled = cancelButton.disabled = false;
+      });
+      bar.append(el('span', 'hint', '저장해도 파일에는 승인할 때 적용됩니다 · Tab 들여쓰기 · Esc 다음 Tab 이동 · Ctrl+S 저장'), cancelButton, saveButton);
+      return bar;
+    }
+
+    function contentEditor(proposal) {
+      const key = proposal.id;
+      const save = () => saveEdit(key, `/api/proposals/${encodeURIComponent(proposal.id)}/content`, 'content');
+      const block = el('div', 'code');
+      block.append(el('div', 'code-label', `${proposal.file_name} · 직접 편집`), codeEditor(key, '생성할 코드', save), editorBar(key, save));
+      return block;
+    }
+
+    // 왼쪽은 편집 전 코드( 파일과 맞춰 보는 기준이라 고치지 않는다 ), 오른쪽은 편집 후 코드 입력란.
+    function regionEditor(proposal, region, index) {
+      const key = `${proposal.id}#${index}`;
+      const save = () => saveEdit(key, `/api/proposals/${encodeURIComponent(proposal.id)}/regions/${index}/after`, 'after');
+      const split = el('div', 'split');
+      const head = el('div', 'split-head');
+      const oldHead = el('div', 'old');
+      oldHead.append(el('span', '', '편집 전 · 파일과 맞춰 보는 기준이라 고칠 수 없습니다'));
+      const newHead = el('div', 'new');
+      newHead.append(el('span', '', '편집 후 · 직접 편집'));
+      head.append(oldHead, newHead);
+      const body = el('div', 'split-body');
+      const leftPane = el('div', 'pane');
+      const lines = el('div', 'lines');
+      highlightLines(normalizeCode(region.before), languageOf(proposal.file_name)).forEach((tokens, i) => lines.append(row('', i + 1, tokens)));
+      leftPane.append(lines);
+      body.append(leftPane, codeEditor(key, `영역 ${index + 1} 편집 후 코드`, save));
+      split.append(head, body, editorBar(key, save));
+      return split;
+    }
+
+    function reviewStatus(proposal) {
+      const { status, reason } = proposal.review;
+      if (status === 'pending') return null;
+      const className = status === 'rejected' ? 'status rejected' : 'status approved';
+      return el('p', className, reason ? `${REVIEW_LABEL[status]} · ${reason}` : REVIEW_LABEL[status]);
+    }
+
     function renderProposal(proposal) {
       const column = el('div', 'column');
+      const open = isPending(proposal);
+      const status = reviewStatus(proposal);
       if (proposal.kind === 'create') {
         column.append(el('div', 'kind', '생성'), el('h1', '', proposal.file_name));
+        if (status) column.append(status);
         column.append(el('h2', '', '생성 목적'), el('p', '', proposal.purpose));
         column.append(el('h2', '', '배치 위치'), el('p', 'meta', proposal.location));
-        column.append(el('h2', '', '코드 내용'), codeBlock(proposal.file_name, proposal.content));
+        const key = proposal.id;
+        column.append(headingRow('코드 내용', proposal.edited ? '직접 수정함' : '', open ? editAction(key, proposal.content) : null));
+        column.append(editing.has(key) ? contentEditor(proposal) : codeBlock(proposal.file_name, proposal.content, proposal.file_name));
       } else {
+        column.classList.add('wide');
         column.append(el('div', 'kind', '편집'), el('h1', '', proposal.file_name));
+        if (status) column.append(status);
         proposal.regions.forEach((region, i) => {
-          column.append(el('h2', '', `영역 ${i + 1}`), el('p', '', region.purpose));
-          const diff = el('div', 'diff');
-          diff.append(codeBlock('편집 전', region.before, 'del'), codeBlock('편집 후', region.after, 'add'));
-          column.append(diff, regionReview(proposal, region, i));
+          const key = `${proposal.id}#${i}`;
+          const editable = open && region.review.status === 'pending';
+          column.append(headingRow(`영역 ${i + 1}`, region.edited ? '직접 수정함' : '', editable ? editAction(key, region.after) : null));
+          column.append(el('p', '', region.purpose));
+          column.append(editable && editing.has(key) ? regionEditor(proposal, region, i) : splitDiff(region.before, region.after, proposal.file_name));
+          column.append(regionReview(proposal, region, i));
         });
       }
+      return column;
+    }
+
+    function renderTaskOverview() {
+      const items = proposals.filter((proposal) => proposal.task === task);
+      const label = taskLabel(task);
+      const waiting = items.filter(isPending).length;
+      const column = el('div', 'column overview');
+      column.append(el('div', 'kind', '작업'), el('h1', '', label.title));
+      column.append(el('p', 'meta', `${task} · 대기 ${waiting}건 / 전체 ${items.length}건`));
+      const panel = el('div', 'panel');
+      for (const proposal of items) {
+        panel.append(button('item', `${proposal.id.slice(task.length).replace(/^_/, '') || proposal.id} · ${proposal.file_name}`, proposalSub(proposal), () => select(`p:${proposal.id}`)));
+      }
+      column.append(panel);
       return column;
     }
 
@@ -482,20 +1043,26 @@
 
     function renderDetail() {
       composer.replaceChildren();
-      const proposal = pending.find((p) => `p:${p.id}` === selected);
+      const proposal = proposals.find((p) => `p:${p.id}` === selected);
       const broken = invalid.find((item) => `i:${item.file}` === selected);
       if (proposal) {
         detail.replaceChildren(renderProposal(proposal));
-        if (proposal.kind === 'create' || pendingRegions(proposal).length > 1) renderComposer(proposal);
+        if (isPending(proposal) && (proposal.kind === 'create' || pendingRegions(proposal).length > 1)) renderComposer(proposal);
       } else if (broken) {
         const column = el('div', 'column');
         column.append(el('div', 'kind', '읽을 수 없는 파일'), el('h1', '', broken.file));
         column.append(el('p', '', broken.error));
         detail.replaceChildren(column);
+      } else if (task !== null) {
+        detail.replaceChildren(renderTaskOverview());
       } else {
+        const groups = taskGroups();
         const placeholder = el('div', 'placeholder');
         const message = el('div');
-        message.append(el('p', '', '승인 대기 중인 제안서가 없습니다'), el('p', 'hint', `확인한 위치: ${source}`));
+        message.append(
+          el('p', '', groups.length ? '왼쪽에서 작업을 고르면 그 작업의 승인 대기 항목만 보입니다' : '제안서가 없습니다'),
+          el('p', 'hint', `진행 중인 작업 ${groups.filter((group) => group.pending).length}개 · 확인한 위치: ${source}`),
+        );
         placeholder.append(message);
         detail.replaceChildren(placeholder);
       }
@@ -506,30 +1073,64 @@
       renderDetail();
     }
 
+    function saveLocation() {
+      const params = new URLSearchParams();
+      if (task !== null) params.set('task', task);
+      if (selected) params.set('item', selected);
+      history.replaceState(null, '', params.size ? `#${params}` : location.pathname);
+    }
+
     function select(key) {
       selected = key;
-      history.replaceState(null, '', `#${encodeURIComponent(key)}`);
+      saveLocation();
       render();
       detail.scrollTop = 0;
     }
 
-    async function load() {
+    function openTask(name) {
+      task = name;
+      selected = null;
+      saveLocation();
+      render();
+      detail.scrollTop = 0;
+    }
+
+    // advance 이면 처리가 끝난 제안서 대신 같은 작업의 다음 대기 항목을 연다.
+    async function load(advance = false) {
       const body = await api('/api/proposals');
-      pending = body.proposals.filter((p) => p.review.status === 'pending');
+      proposals = body.proposals;
       invalid = body.invalid;
       source = body.source;
       const previous = selected;
-      const keys = [...pending.map((p) => `p:${p.id}`), ...invalid.map((item) => `i:${item.file}`)];
-      if (!keys.includes(selected)) selected = keys[0] ?? null;
+      if (task !== null && !proposals.some((p) => p.task === task)) task = null;
+      const current = proposals.find((p) => `p:${p.id}` === selected);
+      const exists = current
+        ? task === null || current.task === task
+        : invalid.some((item) => `i:${item.file}` === selected);
+      if (!exists) selected = null;
+      if (advance && current && !isPending(current)) {
+        const next = proposals.find((p) => p.task === current.task && isPending(p));
+        selected = next ? `p:${next.id}` : null;
+      }
+      saveLocation();
       render();
       if (selected !== previous) detail.scrollTop = 0;
     }
 
+    // 승인할 내용과 화면에 보이는 내용이 달라지지 않도록, 직접 편집 중이면 먼저 저장하게 한다.
+    function unsavedEdit(draftKey) {
+      return [...editing.keys()].some((key) => key === draftKey || (!draftKey.includes('#') && key.startsWith(`${draftKey}#`)));
+    }
+
     async function approve(url, draftKey) {
+      if (unsavedEdit(draftKey)) {
+        showToast('직접 편집 중인 내용을 먼저 저장하거나 취소하세요.', 6000);
+        return;
+      }
       try {
         await api(`${url}/approve`, { method: 'POST' });
         drafts.delete(draftKey);
-        await load();
+        await load(true);
         showToast('승인했습니다. 파일에 적용되었습니다.');
       } catch (error) {
         showError(error);
@@ -540,8 +1141,24 @@
       try {
         await postJson(`${url}/reject`, { reason });
         drafts.delete(draftKey);
-        await load();
+        for (const key of [...editing.keys()]) {
+          if (key === draftKey || key.startsWith(`${draftKey}#`)) editing.delete(key);
+        }
+        await load(true);
         showToast('거부했습니다. 사유가 제안서에 기록되었습니다.');
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    // 직접 편집한 내용을 제안서에 저장한다. 지금 승인할 수 없는 내용이면 이유를 알려준다.
+    async function saveEdit(key, url, field) {
+      try {
+        const result = await postJson(url, { [field]: editing.get(key) });
+        editing.delete(key);
+        await load();
+        if (result.problem) showToast(`저장했습니다. 다만 지금은 승인할 수 없습니다. ${result.problem}`, 12000);
+        else showToast('저장했습니다. 승인하면 이 내용이 파일에 적용됩니다.');
       } catch (error) {
         showError(error);
       }
@@ -616,8 +1233,10 @@
     workspaceButton.addEventListener('click', async () => {
       try {
         const info = await api('/api/workspace', { method: 'DELETE' });
+        task = null;
         selected = null;
         drafts.clear();
+        editing.clear();
         history.replaceState(null, '', location.pathname);
         await showHome(info.recent);
       } catch (error) {
@@ -626,7 +1245,9 @@
     });
 
     async function start() {
-      selected = decodeURIComponent(location.hash.slice(1)) || null;
+      const params = new URLSearchParams(location.hash.slice(1));
+      task = params.get('task');
+      selected = params.get('item');
       const info = await api('/api/workspace');
       if (info.current) await showApp(info.current);
       else await showHome(info.recent);
