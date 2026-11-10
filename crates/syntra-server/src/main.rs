@@ -1,7 +1,8 @@
+mod cli;
 mod workspace;
 
 use std::path::{Path as FsPath, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::{Arc, RwLock};
 
 use axum::{
@@ -13,7 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use syntra_core::{Listing, Proposal, ReviewError, Store};
+use syntra_core::{Edited, Listing, Proposal, ReviewError, Store};
 use workspace::{Folder, Recent};
 
 /// 승인 시 워크스페이스에 쓰기가 일어나므로 로컬 접속만 허용한다.
@@ -33,6 +34,16 @@ type SharedState = Arc<AppState>;
 #[derive(Deserialize)]
 struct RejectRequest {
     reason: String,
+}
+
+#[derive(Deserialize)]
+struct ContentRequest {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct AfterRequest {
+    after: String,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +89,9 @@ impl From<ReviewError> for ApiError {
             }
             ReviewError::NotFound(_) => StatusCode::NOT_FOUND,
             ReviewError::AlreadyReviewed(_) | ReviewError::Apply(_) => StatusCode::CONFLICT,
-            ReviewError::Io(_) | ReviewError::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ReviewError::Io(_) | ReviewError::Json(_) | ReviewError::Config(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
         Self(status, error.to_string())
     }
@@ -200,6 +213,28 @@ async fn reject_region(
     )?))
 }
 
+async fn edit_content(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    Json(request): Json<ContentRequest>,
+) -> Result<Json<Edited>, ApiError> {
+    Ok(Json(
+        current_store(&state)?.edit_content(&id, &request.content)?,
+    ))
+}
+
+async fn edit_region(
+    State(state): State<SharedState>,
+    Path((id, index)): Path<(String, usize)>,
+    Json(request): Json<AfterRequest>,
+) -> Result<Json<Edited>, ApiError> {
+    Ok(Json(current_store(&state)?.edit_region(
+        &id,
+        index,
+        &request.after,
+    )?))
+}
+
 /// 브라우저에서 열린 다른 사이트가 이 서버로 승인 요청을 보내지 못하게 막는다.
 fn is_local_request(headers: &HeaderMap) -> bool {
     let header_str = |name| headers.get(name).and_then(|value| value.to_str().ok());
@@ -242,6 +277,7 @@ fn app(state: SharedState) -> Router {
         .route("/api/proposals", get(list_proposals))
         .route("/api/proposals/{id}/approve", post(approve_proposal))
         .route("/api/proposals/{id}/reject", post(reject_proposal))
+        .route("/api/proposals/{id}/content", post(edit_content))
         .route(
             "/api/proposals/{id}/regions/{index}/approve",
             post(approve_region),
@@ -249,6 +285,10 @@ fn app(state: SharedState) -> Router {
         .route(
             "/api/proposals/{id}/regions/{index}/reject",
             post(reject_region),
+        )
+        .route(
+            "/api/proposals/{id}/regions/{index}/after",
+            post(edit_region),
         )
         .layer(middleware::from_fn(local_only))
         .with_state(state)
@@ -281,8 +321,30 @@ fn open_browser(url: String) {
     });
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("check") => cli::check(&args[1..]),
+        Some("cat") => cli::cat(&args[1..]),
+        Some("-h" | "--help" | "help") => {
+            println!("{}", cli::USAGE);
+            ExitCode::SUCCESS
+        }
+        _ => {
+            let open = !args.iter().any(|arg| arg == "--no-open");
+            let result = tokio::runtime::Runtime::new().and_then(|rt| rt.block_on(serve(open)));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}
+
+async fn serve(open: bool) -> std::io::Result<()> {
     // 7878 포트를 다른 프로그램이 쓰고 있으면 빈 포트로 실행한다.
     let listener = match tokio::net::TcpListener::bind(PREFERRED_ADDR).await {
         Ok(listener) => listener,
@@ -290,7 +352,7 @@ async fn main() -> std::io::Result<()> {
     };
     let url = format!("http://{}", listener.local_addr()?);
     println!("SynTra: {url}");
-    if !std::env::args().any(|arg| arg == "--no-open") {
+    if open {
         open_browser(url);
     }
 
@@ -473,6 +535,49 @@ mod tests {
             std::fs::read_to_string(work.join("c.rs")).unwrap(),
             "one\nTWO\n"
         );
+    }
+
+    #[tokio::test]
+    async fn edit_routes_save_without_applying() {
+        let (dir, app) = test_app();
+        let work = dir.path().join("work");
+        std::fs::write(work.join("c.rs"), "one\n").unwrap();
+        std::fs::write(
+            work.join(".syntra/proposals/edit.json"),
+            r#"{"kind":"edit","file_name":"c.rs","regions":[{"before":"one","after":"ONE","purpose":"a"}]}"#,
+        )
+        .unwrap();
+        open(&app, &dir).await;
+
+        let after = "/api/proposals/edit/regions/0/after";
+        assert_eq!(
+            post_json(&app, after, r#"{"after":"Uno"}"#).await,
+            StatusCode::OK
+        );
+        let content = "/api/proposals/one/content";
+        assert_eq!(
+            post_json(&app, content, r#"{"content":"y"}"#).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(&app, content, "{}").await,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            post_json(&app, "/api/proposals/edit/content", r#"{"content":"y"}"#).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(std::fs::read_to_string(work.join("c.rs")).unwrap(), "one\n");
+        assert!(!work.join("a.rs").exists());
+
+        for id in ["edit", "one"] {
+            assert_eq!(
+                post_json(&app, &format!("/api/proposals/{id}/approve"), "").await,
+                StatusCode::OK
+            );
+        }
+        assert_eq!(std::fs::read_to_string(work.join("c.rs")).unwrap(), "Uno\n");
+        assert_eq!(std::fs::read_to_string(work.join("a.rs")).unwrap(), "y");
     }
 
     #[tokio::test]
