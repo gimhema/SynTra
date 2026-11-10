@@ -3,6 +3,8 @@
 mod apply;
 mod model;
 mod store;
+mod text;
 
 pub use model::{Change, EditRegion, Proposal, Review};
-pub use store::{Entry, InvalidEntry, Listing, ReviewError, Store};
+pub use store::{Edited, Entry, InvalidEntry, Listing, ReviewError, Store};
+pub use text::{Config, Encoding, LineEnding};
