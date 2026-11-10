@@ -5,11 +5,13 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 
-use crate::apply::{apply_create, apply_edit};
+use crate::apply::{PendingWrite, plan_create, plan_edit, read_text};
 use crate::model::{Change, EditRegion, Proposal, Review};
+use crate::text::Config;
 
 const PROPOSALS_DIR: &str = ".syntra/proposals";
 const FALLBACK_PROPOSALS_DIR: &str = "proposals";
+const CONFIG_FILE: &str = ".syntra/config.json";
 
 /// 워크스페이스의 제안서 디렉터리. 제안서 하나가 `<id>.json` 파일 하나에 대응한다.
 #[derive(Debug)]
@@ -21,6 +23,8 @@ pub struct Store {
 #[derive(Debug, Serialize)]
 pub struct Entry {
     pub id: String,
+    /// 같은 작업의 제안서를 묶어 보여주기 위한 작업 이름. (`Proposal::task_of`)
+    pub task: String,
     #[serde(flatten)]
     pub proposal: Proposal,
 }
@@ -40,6 +44,13 @@ pub struct Listing {
     pub invalid: Vec<InvalidEntry>,
 }
 
+/// 수동 편집 결과. 고친 내용은 저장하되, 지금 승인하면 실패할 이유가 있으면 `problem`에 담는다.
+#[derive(Debug, Serialize)]
+pub struct Edited {
+    pub proposal: Proposal,
+    pub problem: Option<String>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ReviewError {
     #[error("거부 사유를 입력해야 합니다")]
@@ -52,6 +63,8 @@ pub enum ReviewError {
     Apply(String),
     #[error("허용되지 않는 경로입니다: {0}")]
     UnsafePath(String),
+    #[error("설정 파일({CONFIG_FILE})을 읽을 수 없습니다: {0}")]
+    Config(String),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error("제안서 파일을 읽을 수 없습니다: {0}")]
@@ -97,6 +110,16 @@ impl Store {
         }
     }
 
+    /// 승인할 때마다 읽으므로 설정을 바꾸면 서버를 다시 띄우지 않아도 반영된다.
+    pub fn config(&self) -> Result<Config, ReviewError> {
+        let text = match fs::read_to_string(self.root.join(CONFIG_FILE)) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
+            Err(e) => return Err(ReviewError::Config(e.to_string())),
+        };
+        serde_json::from_str(&text).map_err(|e| ReviewError::Config(e.to_string()))
+    }
+
     pub fn list(&self) -> io::Result<Listing> {
         let dir = self.dir();
         let mut listing = Listing {
@@ -136,24 +159,10 @@ impl Store {
     pub fn approve(&self, id: &str) -> Result<Proposal, ReviewError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut proposal = self.load_pending(id)?;
-        let dir = self.dir();
+        self.plan(&proposal)?.commit()?;
         match &mut proposal.change {
-            Change::Create {
-                file_name,
-                content,
-                location,
-                ..
-            } => {
-                apply_create(&self.root, &dir, location, file_name, content)?;
-                proposal.review = Review::Approved;
-            }
-            Change::Edit { file_name, regions } => {
-                let pending: Vec<(usize, &EditRegion)> = regions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, region)| region.review == Review::Pending)
-                    .collect();
-                apply_edit(&self.root, &dir, file_name, &pending)?;
+            Change::Create { .. } => proposal.review = Review::Approved,
+            Change::Edit { regions, .. } => {
                 for region in regions.iter_mut() {
                     if region.review == Review::Pending {
                         region.review = Review::Approved;
@@ -164,6 +173,39 @@ impl Store {
         }
         self.save(id, &proposal)?;
         Ok(proposal)
+    }
+
+    /// 승인했을 때 적용될 수 있는지만 확인한다. 워크스페이스와 제안서 파일은 바꾸지 않는다.
+    /// 에이전트가 제안서를 넘기기 전에 스스로 검증하는 데 쓴다.
+    pub fn check(&self, id: &str) -> Result<(), ReviewError> {
+        self.plan(&self.load_pending(id)?).map(drop)
+    }
+
+    /// 워크스페이스 파일을 승인 시 비교하는 그대로 읽는다. (형식 설명, 내용)을 돌려준다.
+    pub fn read_text(&self, file_name: &str) -> Result<(String, String), ReviewError> {
+        read_text(&self.root, file_name)
+    }
+
+    /// 대기 중인 변경을 모두 적용한 파일 내용을 만든다.
+    fn plan(&self, proposal: &Proposal) -> Result<PendingWrite, ReviewError> {
+        let dir = self.dir();
+        let config = self.config()?;
+        match &proposal.change {
+            Change::Create {
+                file_name,
+                content,
+                location,
+                ..
+            } => plan_create(&self.root, &dir, &config, location, file_name, content),
+            Change::Edit { file_name, regions } => {
+                let pending: Vec<(usize, &EditRegion)> = regions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, region)| region.review == Review::Pending)
+                    .collect();
+                plan_edit(&self.root, &dir, &config, file_name, &pending)
+            }
+        }
     }
 
     /// 제안서를 거부 상태로 기록한다. 편집안은 아직 대기 중인 영역을 모두 거부한다.
@@ -194,8 +236,16 @@ impl Store {
     pub fn approve_region(&self, id: &str, index: usize) -> Result<Proposal, ReviewError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut proposal = self.load_pending(id)?;
+        let config = self.config()?;
         let (file_name, region) = pending_region(&mut proposal, id, index)?;
-        apply_edit(&self.root, &self.dir(), &file_name, &[(index, &*region)])?;
+        plan_edit(
+            &self.root,
+            &self.dir(),
+            &config,
+            &file_name,
+            &[(index, &*region)],
+        )?
+        .commit()?;
         region.review = Review::Approved;
         proposal.settle();
         self.save(id, &proposal)?;
@@ -218,6 +268,47 @@ impl Store {
         proposal.settle();
         self.save(id, &proposal)?;
         Ok(proposal)
+    }
+
+    /// 대기 중인 생성안의 내용을 사용자가 고친 값으로 바꾼다. 워크스페이스는 바꾸지 않는다.
+    /// 저장한 뒤 승인했을 때 적용될 수 있는지 확인하고, 안 되면 그 이유를 함께 돌려준다.
+    pub fn edit_content(&self, id: &str, content: &str) -> Result<Edited, ReviewError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proposal = self.load_pending(id)?;
+        let Change::Create {
+            content: current, ..
+        } = &mut proposal.change
+        else {
+            return Err(ReviewError::NotFound(format!("{id} 생성안")));
+        };
+        let content = same_line_endings(content, current);
+        if content != *current {
+            *current = content;
+            proposal.edited = true;
+            self.save(id, &proposal)?;
+        }
+        Ok(self.edited(proposal))
+    }
+
+    /// 대기 중인 편집 영역의 편집 후 코드를 사용자가 고친 값으로 바꾼다. 워크스페이스는 바꾸지 않는다.
+    /// 편집 전 코드는 파일과 맞춰 보는 기준이므로 고치지 않는다.
+    pub fn edit_region(&self, id: &str, index: usize, after: &str) -> Result<Edited, ReviewError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proposal = self.load_pending(id)?;
+        let (_, region) = pending_region(&mut proposal, id, index)?;
+        // 브라우저 입력란은 줄바꿈을 \n 으로 바꾸므로 원래 영역의 줄바꿈으로 되돌린다.
+        let after = same_line_endings(after, &format!("{}{}", region.before, region.after));
+        if after != region.after {
+            region.after = after;
+            region.edited = true;
+            self.save(id, &proposal)?;
+        }
+        Ok(self.edited(proposal))
+    }
+
+    fn edited(&self, proposal: Proposal) -> Edited {
+        let problem = self.plan(&proposal).err().map(|e| e.to_string());
+        Edited { proposal, problem }
     }
 
     fn load_pending(&self, id: &str) -> Result<Proposal, ReviewError> {
@@ -278,6 +369,16 @@ fn pending_region<'a>(
     Ok((file_name.clone(), region))
 }
 
+/// 원래 텍스트가 CRLF를 쓰면 새 텍스트의 줄바꿈도 CRLF로, 아니면 LF로 맞춘다.
+fn same_line_endings(text: &str, like: &str) -> String {
+    let text = text.replace("\r\n", "\n");
+    if like.contains("\r\n") {
+        text.replace('\n', "\r\n")
+    } else {
+        text
+    }
+}
+
 fn has_json_file(dir: &Path) -> bool {
     fs::read_dir(dir).is_ok_and(|entries| {
         entries
@@ -301,8 +402,9 @@ fn read_entry(path: &Path) -> Result<Entry, String> {
         .ok_or("파일명은 영문, 숫자, '-', '_'만 사용할 수 있습니다")?
         .to_string();
     let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let proposal = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    Ok(Entry { id, proposal })
+    let proposal: Proposal = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let task = proposal.task_of(&id);
+    Ok(Entry { id, task, proposal })
 }
 
 #[cfg(test)]
@@ -834,6 +936,118 @@ mod tests {
     }
 
     #[test]
+    fn task_comes_from_field_or_id() {
+        let (dir, store) = store_with("20261102_1110_Siege_01", CREATE);
+        write_proposal(dir.path(), "20261102_1110_Siege_02", CREATE);
+        write_proposal(dir.path(), "solo", CREATE);
+        write_proposal(dir.path(), "a_b_x1", CREATE);
+        write_proposal(
+            dir.path(),
+            "named_03",
+            &CREATE.replace(r#""kind""#, r#""task":" 버그 수정 ","kind""#),
+        );
+        let tasks: Vec<(String, String)> = store
+            .list()
+            .unwrap()
+            .proposals
+            .into_iter()
+            .map(|entry| (entry.id, entry.task))
+            .collect();
+        let expected = [
+            ("20261102_1110_Siege_01", "20261102_1110_Siege"),
+            ("20261102_1110_Siege_02", "20261102_1110_Siege"),
+            ("a_b_x1", "a_b_x1"),
+            ("named_03", "버그 수정"),
+            ("solo", "solo"),
+        ];
+        assert_eq!(
+            tasks,
+            expected.map(|(id, task)| (id.to_string(), task.to_string()))
+        );
+    }
+
+    #[test]
+    fn edited_region_is_saved_with_file_line_endings() {
+        let (_dir, store, file) = two_regions();
+        let edited = store.edit_region("e", 1, "THREE!\n").unwrap();
+        assert_eq!(edited.problem, None);
+        let Change::Edit { regions, .. } = &edited.proposal.change else {
+            panic!("편집안이 아닙니다");
+        };
+        assert_eq!(regions[1].after, "THREE!\n");
+        assert!(regions[1].edited && !regions[0].edited);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one\nthree\n");
+
+        store.approve("e").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "ONE\nTHREE!\n");
+
+        let (dir, store, _file) = cp949_repo(None);
+        write_proposal(dir.path(), "e", &cpp_edit_json("int a;\r\n", "int b;\r\n"));
+        let edited = store.edit_region("e", 0, "int c;\nint d;\n").unwrap();
+        let Change::Edit { regions, .. } = &edited.proposal.change else {
+            panic!("편집안이 아닙니다");
+        };
+        assert_eq!(regions[0].after, "int c;\r\nint d;\r\n");
+    }
+
+    #[test]
+    fn edit_reports_problem_but_keeps_text() {
+        let (dir, store, _file) = cp949_repo(None);
+        write_proposal(dir.path(), "e", &cpp_edit_json("int a;", "int b;"));
+        let edited = store.edit_region("e", 0, "int b; // 😀").unwrap();
+        assert!(edited.problem.is_some());
+        let saved = &store.list().unwrap().proposals[0].proposal;
+        let Change::Edit { regions, .. } = &saved.change else {
+            panic!("편집안이 아닙니다");
+        };
+        assert_eq!(regions[0].after, "int b; // 😀");
+        assert_eq!(saved.review, Review::Pending);
+    }
+
+    #[test]
+    fn edited_content_is_saved_and_unchanged_text_is_not_marked() {
+        let (dir, store) = repo();
+        write_proposal(dir.path(), "c", &create_json("src/", "n.rs"));
+        let original = fs::read_to_string(proposal_path(dir.path(), "c")).unwrap();
+        assert!(!store.edit_content("c", "new\n").unwrap().proposal.edited);
+        assert_eq!(
+            fs::read_to_string(proposal_path(dir.path(), "c")).unwrap(),
+            original
+        );
+
+        let edited = store.edit_content("c", "changed\n").unwrap();
+        assert!(edited.proposal.edited);
+        store.approve("c").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/n.rs")).unwrap(),
+            "changed\n"
+        );
+    }
+
+    #[test]
+    fn only_pending_items_can_be_edited() {
+        let (_dir, store, _file) = two_regions();
+        store.approve_region("e", 0).unwrap();
+        assert!(matches!(
+            store.edit_region("e", 0, "x"),
+            Err(ReviewError::AlreadyReviewed(_))
+        ));
+        assert!(matches!(
+            store.edit_region("e", 5, "x"),
+            Err(ReviewError::NotFound(_))
+        ));
+        assert!(matches!(
+            store.edit_content("e", "x"),
+            Err(ReviewError::NotFound(_))
+        ));
+        store.reject("e", "사유").unwrap();
+        assert!(matches!(
+            store.edit_region("e", 1, "x"),
+            Err(ReviewError::AlreadyReviewed(_))
+        ));
+    }
+
+    #[test]
     fn bundled_examples_are_valid() {
         for json in [
             include_str!("../../../examples/proposals/create-greeting.json"),
@@ -841,5 +1055,162 @@ mod tests {
         ] {
             serde_json::from_str::<Proposal>(json).unwrap();
         }
+    }
+
+    /// CP949 + CRLF로 된 `src/main.cpp`가 있는 워크스페이스를 만든다.
+    fn cp949_repo(config: Option<&str>) -> (tempfile::TempDir, Store, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("src")).unwrap();
+        let file = root.join("src/main.cpp");
+        // "// 한글\r\nint a;\r\n"
+        fs::write(&file, b"// \xC7\xD1\xB1\xDB\r\nint a;\r\n").unwrap();
+        if let Some(config) = config {
+            fs::create_dir_all(root.join(".syntra")).unwrap();
+            fs::write(root.join(CONFIG_FILE), config).unwrap();
+        }
+        let store = Store::new(root);
+        (dir, store, file)
+    }
+
+    fn cpp_edit_json(before: &str, after: &str) -> String {
+        edit_json(before, after).replace("src/main.rs", "src/main.cpp")
+    }
+
+    #[test]
+    fn cp949_crlf_file_keeps_its_format() {
+        let (dir, store, file) = cp949_repo(None);
+        write_proposal(
+            dir.path(),
+            "e",
+            &cpp_edit_json("// 한글\nint a;\n", "// 한글 수정\nint a = 0;\n"),
+        );
+        assert_eq!(store.approve("e").unwrap().review, Review::Approved);
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            b"// \xC7\xD1\xB1\xDB \xBC\xF6\xC1\xA4\r\nint a = 0;\r\n"
+        );
+    }
+
+    #[test]
+    fn unmappable_character_leaves_cp949_file_untouched() {
+        let (dir, store, file) = cp949_repo(None);
+        write_proposal(dir.path(), "e", &cpp_edit_json("int a;", "int a; // 😀"));
+        assert!(matches!(store.approve("e"), Err(ReviewError::Apply(_))));
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            b"// \xC7\xD1\xB1\xDB\r\nint a;\r\n"
+        );
+    }
+
+    #[test]
+    fn mixed_line_endings_need_an_exact_match() {
+        let (dir, store, file) = cp949_repo(None);
+        fs::write(&file, "a\r\nb\nc\r\n").unwrap();
+        write_proposal(dir.path(), "e", &cpp_edit_json("a\nb\n", "x\n"));
+        let Err(ReviewError::Apply(message)) = store.approve("e") else {
+            panic!("줄바꿈이 다른데 적용되었습니다");
+        };
+        assert!(message.contains("줄바꿈"), "{message}");
+
+        write_proposal(dir.path(), "e", &cpp_edit_json("a\r\nb\n", "x\r\n"));
+        store.approve("e").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "x\r\nc\r\n");
+    }
+
+    #[test]
+    fn create_follows_the_config() {
+        let (dir, store, _file) = cp949_repo(Some(r#"{"encoding":"cp949","line_ending":"crlf"}"#));
+        write_proposal(
+            dir.path(),
+            "c",
+            &serde_json::json!({
+                "kind": "create",
+                "file_name": "new.h",
+                "content": "// 한글\n#pragma once\n",
+                "purpose": "p",
+                "location": "src/",
+            })
+            .to_string(),
+        );
+        store.approve("c").unwrap();
+        assert_eq!(
+            fs::read(dir.path().join("src/new.h")).unwrap(),
+            b"// \xC7\xD1\xB1\xDB\r\n#pragma once\r\n"
+        );
+    }
+
+    #[test]
+    fn ascii_file_gets_the_configured_encoding() {
+        let (dir, store, file) = cp949_repo(Some(r#"{"encoding":"cp949"}"#));
+        fs::write(&file, "int a;\r\n").unwrap();
+        write_proposal(
+            dir.path(),
+            "e",
+            &cpp_edit_json("int a;\n", "int a; // 한글\n"),
+        );
+        store.approve("e").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"int a; // \xC7\xD1\xB1\xDB\r\n");
+    }
+
+    #[test]
+    fn broken_config_refuses_approval() {
+        let (dir, store, file) = cp949_repo(Some(r#"{"encoding":"euc-kr"}"#));
+        write_proposal(dir.path(), "e", &cpp_edit_json("int a;", "int b;"));
+        assert!(matches!(store.approve("e"), Err(ReviewError::Config(_))));
+        assert!(matches!(store.check("e"), Err(ReviewError::Config(_))));
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            b"// \xC7\xD1\xB1\xDB\r\nint a;\r\n"
+        );
+    }
+
+    #[test]
+    fn check_reports_without_changing_anything() {
+        let (dir, store, file) = cp949_repo(Some(r#"{"encoding":"cp949"}"#));
+        let original = fs::read(&file).unwrap();
+        write_proposal(
+            dir.path(),
+            "ok",
+            &cpp_edit_json("int a;\n", "int b; // 한글\n"),
+        );
+        write_proposal(dir.path(), "missing", &cpp_edit_json("int z;", "int b;"));
+        write_proposal(
+            dir.path(),
+            "emoji",
+            &cpp_edit_json("int a;", "int a; // 😀"),
+        );
+        write_proposal(dir.path(), "exists", &create_json("src/", "main.cpp"));
+        let before = fs::read_to_string(proposal_path(dir.path(), "ok")).unwrap();
+
+        store.check("ok").unwrap();
+        for id in ["missing", "emoji", "exists"] {
+            assert!(
+                matches!(store.check(id), Err(ReviewError::Apply(_))),
+                "{id}"
+            );
+        }
+
+        assert_eq!(fs::read(&file).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(proposal_path(dir.path(), "ok")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn read_text_matches_what_approval_compares() {
+        let (dir, store, _file) = cp949_repo(None);
+        fs::write(dir.path().join("src/gbk.h"), b"// \xC9\xCF\r\nint a;\r\n").unwrap();
+        let (format, text) = store.read_text("src/main.cpp").unwrap();
+        assert_eq!(format, "CP949, CRLF");
+        assert_eq!(text, "// 한글\r\nint a;\r\n");
+        let (format, text) = store.read_text("src/gbk.h").unwrap();
+        assert!(format.contains("해석되지 않는"), "{format}");
+        assert_eq!(text, "// \u{FFFD}\u{FFFD}\r\nint a;\r\n");
+        assert!(matches!(
+            store.read_text("../outside.txt"),
+            Err(ReviewError::UnsafePath(_))
+        ));
     }
 }
