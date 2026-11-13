@@ -1,0 +1,11 @@
+{
+  "kind": "edit",
+  "file_name": "src/greeting.rs",
+  "regions": [
+    {
+      "before": "    format!(\"안녕하세요, {name}님!\")\n}\n",
+      "after": "    format!(\"안녕하세요, {name}님!\")\n}\n\npub fn farewell(name: &str) -> String {\n    format!(\"안녕히 가세요, {name}님!\")\n}\n",
+      "purpose": "인사말과 같은 방식으로 작별 인사 문구를 만드는 함수를 추가한다."
+    }
+  ]
+}

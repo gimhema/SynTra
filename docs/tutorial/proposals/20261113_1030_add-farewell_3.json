@@ -1,0 +1,11 @@
+{
+  "kind": "edit",
+  "file_name": "src/main.rs",
+  "regions": [
+    {
+      "before": "    println!(\"안녕하세요, 철수님!\");\n",
+      "after": "    println!(\"안녕하세요, 철수님!\");\n    println!(\"안녕히 가세요, 철수님!\");\n",
+      "purpose": "작별 인사를 출력한다."
+    }
+  ]
+}

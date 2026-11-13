@@ -1,0 +1,16 @@
+{
+  "kind": "edit",
+  "file_name": "src/main.rs",
+  "regions": [
+    {
+      "before": "    println!(\"{}\", greeting::greeting(\"철수\"));\n",
+      "after": "    println!(\"{}\", greeting::greeting(\"철수\"));\n    println!(\"{}\", greeting::farewell(\"철수\"));\n",
+      "purpose": "프로그램이 끝날 때 작별 인사를 출력한다."
+    },
+    {
+      "before": "fn main() {\n",
+      "after": "/// 인사말과 작별 인사를 차례로 출력한다.\nfn main() {\n",
+      "purpose": "main 함수가 하는 일을 문서 주석으로 남긴다."
+    }
+  ]
+}
